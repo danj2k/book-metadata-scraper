@@ -61,7 +61,8 @@ Top-level controller. Runs scoped sources first (discovery + parsing), then univ
 **Scoped sources** (`sources/scoped/`):
 - `aethon.py` — Aethon Books. Discovery via `/series/` index → JSON-LD `hasPart`. Parsing via JSON-LD `Book` blocks.
 - `podium.py` — Podium Entertainment. Discovery via `sitemap.xml` (~13,500 URLs in one request). Parsing via CSS selectors and text extraction (no JSON-LD on this site). Extracts `podium_id` from URL path for deduplication.
-- `lnrelease.py` — Light Novel Releases calendar. Discovery via a single JSON data file (`data.json`) containing ~7700 entries. Entries are grouped by (title, volume) so different format editions (ebook, paperback, hardcover, audiobook) merge into one book record. Data cached locally with 24-hour TTL.
+- `lnrelease.py` — Light Novel Releases. Discovery via `data.json` (7,700+ entries, cached 24h). Groups entries by (title, volume) across format editions. Format-specific ISBNs.
+- `shadow_alley.py` — Shadow Alley Press. Discovery via `/library/` → `/book-series/{slug}/` → `/book/{slug}/`. Handles two WordPress templates (Genesis + block editor). Extracts `shadow_alley_id` slug from URL for deduplication.
 
 **Universal sources** (`sources/universal/`):
 - `google_books.py` — Google Books API. Enriches with description, publisher, dates, page count, language, cover image, genres, and identifiers.

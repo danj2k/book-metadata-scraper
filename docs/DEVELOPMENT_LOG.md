@@ -112,7 +112,7 @@ Verified end-to-end:
 - ISBN search (`9780593135204`) → search → audiobook page → redirect to Kindle page → full metadata
 - Audiobook ASIN (`B08G9SKSHR`) → redirect to Kindle page → full metadata
 - Kindle ASIN (`B08FFJS3YW`) → direct page → full metadata
-| All tests return correct data: publisher (Cornerstone Digital), date (4 May 2021), pages (481), language (en)
+- All tests return correct data: publisher (Cornerstone Digital), date (4 May 2021), pages (481), language (en)
 
 ## 2026-06-28: LNRelease scoped source
 
@@ -139,3 +139,41 @@ Verified:
 - Single format works (1000 Words Left to Live: hardcover only)
 - Audiobook entries correctly inherit ISBNs from their group
 - 5508 unique title+volume groups produced from 7732 raw entries
+
+## 2026-06-28: Shadow Alley Press scoped source
+
+Explored the Shadow Alley Press website structure:
+- `/library/` page lists 58 series as links to `/book-series/{slug}/` pages
+- Series pages contain article elements for each book (article order = series position)
+- Individual book pages at `/book/{slug}/` have full metadata
+- Two WordPress templates in use:
+  1. **Genesis** (older books): `<h1 class="entry-title">`, `<span class="book-series-book">`, `itemprop="text"` for description, metadata in `<li>` items
+  2. **Block editor** (newer books): `<h2 class="wp-block-post-title">`, `<p class="book-series-book">`, description in `<p class="wp-block-paragraph">` tags
+- Article CSS classes contain metadata: `book-authors-{slug}`, `book-series-{slug}`, `book-tags-{slug}`, `book-genres-{slug}`
+- No JSON-LD on book pages, but articles have `CreativeWork` microdata
+- Standalone books (not in any series) exist as New Releases on the library page
+
+Key challenges:
+1. The `itemprop="headline"` attribute is on the site header's `<h1>`, not the book title — must use `entry-title` class instead
+2. The `wp-block-post-title` regex must match actual HTML elements, not CSS selectors inside `<style>` tags
+3. Block template has no `<li>` metadata items — pages extracted from different location
+4. Block template series info uses `<p>` not `<span>` for `book-series-book`
+5. Block template description requires stripping `<style>`/`<script>` blocks first
+
+Implemented `shadow_alley.py`:
+- Discovery: library page → series pages (article order = position) → book URLs; also standalone books from New Releases
+- Parsing: dual-template support (Genesis + block editor)
+- Title: `entry-title` → `wp-block-post-title` → `og:title` fallback
+- Authors: from article CSS classes (`book-authors-{slug}` → human-readable name)
+- Series: from `book-series-book` element (works for both `<span>` and `<p>`)
+- Genres: from article CSS classes (`book-tags-{slug}`) and footer "Tagged with:" links
+- Description: Genesis uses `itemprop="text"` + `<h3>` tagline; blocks use `<p class="wp-block-paragraph">` after title heading
+- Metadata: Genesis uses `<li>` items (Pages, Published, Duration); blocks extract from different locations
+- Cover image: from `author-pro-featured-image` div or first site-hosted image
+- Identifiers: `shadow_alley_id` from URL slug
+
+Verified:
+- Genesis template: Rogue Dungeon — full metadata (title, 2 authors, series #1, genres, date, pages, description)
+- Block template: Wayspring Wildshaper — title, author, series #3, genres, pages, description (905 chars)
+- Block template: Apocalypse Redux 2 — title, author, genres, pages, description (box set)
+- Discovery: 58 series processed, positions correctly assigned from article order
