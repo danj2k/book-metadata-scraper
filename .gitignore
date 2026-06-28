@@ -18,3 +18,4 @@ scraper.toml
 
 # Local cache (fetched data, regenerated on demand)
 .cache/
+uv.lock

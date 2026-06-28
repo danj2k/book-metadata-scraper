@@ -57,28 +57,35 @@ class SessionManager:
             self._stealthy = None
         logger.info("Sessions stopped")
 
-    async def _http_rate_wait(self) -> None:
-        """Enforce minimum interval between HTTP fetches if configured."""
-        if self._http_rate_limit is None:
+    async def _http_rate_wait(self, min_interval: float | None = None) -> None:
+        """Enforce minimum interval between HTTP fetches if configured.
+
+        If *min_interval* is provided it overrides the global
+        ``http_rate_limit`` for this single call.
+        """
+        interval = min_interval if min_interval is not None else self._http_rate_limit
+        if interval is None:
             return
         async with self._http_lock:
             now = time.monotonic()
-            wait = self._http_rate_limit - (now - self._http_last_fetch)
+            wait = interval - (now - self._http_last_fetch)
             if wait > 0:
                 logger.debug("Rate limit: sleeping %.2fs", wait)
                 await asyncio.sleep(wait)
             self._http_last_fetch = time.monotonic()
 
-    async def fetch_http(self, url: str, **kwargs):
+    async def fetch_http(self, url: str, *, min_interval: float | None = None, **kwargs):
         """Fetch *url* via the plain HTTP session (FetcherSession).
 
         Use for APIs and sites that do not require stealth.
+        ``min_interval`` overrides the global ``http_rate_limit`` for this
+        single call when provided.
         ``**kwargs`` are forwarded to the session's ``.get()`` method.
         Returns a Scrapling Response object.
         """
         if not self._http:
             raise RuntimeError("SessionManager.start() has not been called")
-        await self._http_rate_wait()
+        await self._http_rate_wait(min_interval)
         async with self._sem:
             return await self._http.get(url, **kwargs)
 

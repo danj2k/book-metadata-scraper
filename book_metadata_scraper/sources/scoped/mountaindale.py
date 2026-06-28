@@ -133,6 +133,7 @@ class MountaindalePressSource(BaseScopedSource):
 
     name = "mountaindale_press"
     session_type = SESSION_HTTP
+    rate_limit = 1.0  # 1 request per second — Shopify rate-limits aggressively
 
     BASE_URL = "https://www.mountaindalepress.store"
     COLLECTION_URL = f"{BASE_URL}/collections/all-books/products.json"
@@ -149,7 +150,7 @@ class MountaindalePressSource(BaseScopedSource):
             url = f"{self.COLLECTION_URL}?limit=250&page={page}"
             logger.info("Fetching Mountaindale catalog page %d", page)
 
-            response = await self.session.fetch_http(url)
+            response = await self.fetch(url)
             if response.status != 200:
                 logger.warning("Failed to fetch catalog page %d: HTTP %d", page, response.status)
                 break
@@ -208,7 +209,7 @@ class MountaindalePressSource(BaseScopedSource):
 
         # Fetch the product data from the Shopify API
         product_url = f"{self.BASE_URL}/products/{handle}.json"
-        product_response = await self.session.fetch_http(product_url)
+        product_response = await self.fetch(product_url)
 
         if product_response.status != 200:
             logger.warning("Failed to fetch product JSON for %s: HTTP %d", handle, product_response.status)
@@ -230,7 +231,7 @@ class MountaindalePressSource(BaseScopedSource):
         author_name = None
         try:
             collection_url = f"{self.COLLECTION_URL}?limit=250"
-            collection_response = await self.session.fetch_http(collection_url)
+            collection_response = await self.fetch(collection_url)
             if collection_response.status == 200:
                 collection_data = collection_response.json()
                 for p in collection_data.get("products", []):

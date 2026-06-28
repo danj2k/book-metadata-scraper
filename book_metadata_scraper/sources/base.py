@@ -30,11 +30,15 @@ class BaseSource(ABC):
                           SESSION_STEALTHY -> self.session.fetch_stealthy(url)
                         Defaults to SESSION_STEALTHY. Override to SESSION_HTTP for
                         API-based sources or plain sites that need no stealth fetching.
+        rate_limit   -- Minimum seconds between requests for this source, or ``None``
+                        for no per-source limit (the global ``http_rate_limit`` still
+                        applies if configured).  Passed through to ``fetch()``.
     """
 
     name: str
     source_type: str
     session_type: str = SESSION_STEALTHY
+    rate_limit: float | None = None
 
     def __init__(self, session: SessionManager, config: dict):
         """
@@ -47,6 +51,17 @@ class BaseSource(ABC):
         """
         self.session = session
         self.config = config
+
+    async def fetch(self, url: str, **kwargs):
+        """Fetch *url* using this source's session type and rate limit.
+
+        Routes to ``fetch_http`` or ``fetch_stealthy`` based on
+        ``session_type`` and passes ``self.rate_limit`` through as
+        ``min_interval`` so each source can declare its own politeness.
+        """
+        if self.session_type == SESSION_HTTP:
+            return await self.session.fetch_http(url, min_interval=self.rate_limit, **kwargs)
+        return await self.session.fetch_stealthy(url, **kwargs)
 
 
 class BaseScopedSource(BaseSource, ABC):
