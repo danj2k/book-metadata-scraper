@@ -8,161 +8,101 @@ Created the full project skeleton from the design document (book-metadata-scrape
 - `config.py` — `ScraperConfig` dataclass + `load_config()`
 - `fetcher.py` — `SessionManager` with Scrapling `FetcherSession` and `AsyncStealthySession`, semaphore-capped concurrency
 - `models.py` — `BookData` and `AuthorData` dataclasses
-- `normalise.py` — author name normalisation for deduplication
-- `matching.py` — identity resolution (isbn13 > isbn > asin > goodreads > title+author)
-- `orchestrator.py` — two-phase pipeline (scoped discovery → universal enrichment)
-- `db/schema.py` — 8 tables + trigger, WAL mode, foreign keys
-- `db/repository.py` — full async SQL layer with all CRUD operations
+- `normalise.py` — author name dedup keys (strip diacritics, lowercase, collapse whitespace)
+- `matching.py` — identity resolution (ISBN > ASIN > title+author)
+- `orchestrator.py` — main pipeline: scoped discovery → identity resolution → storage → universal enrichment
+- `db/schema.py` — 8 tables + trigger for null-safe scoped updates
+- `db/repository.py` — all async SQL via aiosqlite
 - `sources/base.py` — `BaseSource`, `BaseScopedSource`, `BaseUniversalSource`
-- `sources/registry.py` — `@scoped_source` / `@universal_source` decorators
-- `sources/__init__.py` — auto-import via `pkgutil.iter_modules`
-
-Verified: all imports clean, database layer end-to-end test passed (insert, fetch, identifier lookup, title+author lookup, null-update merge, enrichment tracking).
+- `sources/registry.py` — decorator-based source registration
 
 ## 2026-06-28: Aethon Books scoped source
 
-Explored the Aethon Books website structure:
-- `/series/` index page lists all ~500 series with no pagination
-- Each series page has JSON-LD `CreativeWorkSeries` with `hasPart` listing all books
-- Individual book pages have JSON-LD `Book` with full metadata
+Implemented `aethon.py` as the first scoped source:
 
-Implemented `aethon.py`:
-- Discovery walks `/series/` → series pages → `hasPart` URLs
-- Yields `(url, position)` tuples (position from `hasPart` entry)
-- Parsing extracts JSON-LD directly — no CSS scraping
-- Format-specific ASINs: `asin_ebook`, `asin_paperback`, `asin_audiobook`
-
-Infrastructure additions:
-- `min_interval` rate limiting in `SessionManager` (configurable `http_rate_limit`)
-- `discover_book_urls` can yield `(url, position)` tuples; orchestrator applies position to `book_data`
+- Discovery via `/series/` index page (all ~500 series in one request)
+- Series page parsing via JSON-LD `CreativeWorkSeries.hasPart`
+- Book parsing via JSON-LD `@type: Book`
+- Added `min_interval` rate limiting to `SessionManager`
+- Added `discover_book_urls()` support for `(url, position)` tuples
+- Verified: Discovery yields correct positions, parsing extracts all metadata and identifiers
 
 ## 2026-06-28: Google Books universal source
 
-Implemented `google_books.py`:
-- Query priority: ISBN > direct volume fetch > title+author search
-- Enriches: description, publisher, published_date, page_count, language, cover_image, genres, identifiers
-- Only returns identifiers not already in `existing_identifiers`
-- Uses `projection=full` for complete volumeInfo
-- Uses `google_search=False` to avoid Scrapling's default Google referer (which triggers 429s)
+Implemented `google_books.py` as the first universal source:
 
-Live testing with API key:
-- ISBN lookup (`9780593135204`) returned correct data for "Project Hail Mary"
-- Title+author search returned correct data for "The Martian"
+- ISBN lookup via `isbn:` endpoint (most reliable)
+- Title+author search via `intitle:` + `inauthor:`
+- Enrichment: description, publisher, date, pages, language, cover image, genres/categories
+- Uses `projection=full` for complete `volumeInfo` (identifiers, imageLinks, categories)
+- Uses `google_search=False` to avoid Scrapling's default Google referer header
 
-Discovered: Google Books API returns 429 without an API key (no IP-based quota). The `key` parameter is supported via `source_config.google_books.api_key`.
-
-## 2026-06-28: README and LICENSE
-
-Added:
-- `README.md` — end-user documentation covering features, installation, configuration, pipeline description, project structure, and how to add sources
-- `LICENSE` — MIT license
-
-## 2026-06-28: AGENTS.md and design document
-
-Added `AGENTS.md` (project documentation standards) and loaded the original design document into `docs/book-metadata-scraper-design.md` for version control.
-
-## 2026-06-28: Podium Entertainment scoped source
-
-Explored the Podium website structure:
-- `/titles` page has a JavaScript-driven "Load More" button (inaccessible to plain HTTP)
-- `/sitemap.xml` contains all ~13,500 individual title URLs in one request — ideal for discovery
-- Book pages are server-rendered HTML (Next.js App Router) with no JSON-LD or Open Graph metadata
-- URL pattern: `/titles/{numeric_id}/{slug}` — the numeric ID is a stable unique identifier
-
-Key discovery: Scrapling's `FetcherSession` returns `html_content` (parsed HTML) and `css()` selectors, but `text` is empty. Must use CSS selectors and `get_all_text()` for content extraction.
+## 2026-06-29: Podium Entertainment scoped source
 
 Implemented `podium.py`:
-- Discovery: single fetch of `sitemap.xml`, regex-extract all `/titles/{id}/{slug}` URLs
-- Parsing: CSS selectors for title (h1), series, author, genre; `get_all_text()` for metadata; regex on raw HTML for description
-- Identifiers: `podium_id` from URL path, ISBN-13 from Bookshop/B&N/Audiobooks.com links, ASINs from Amazon/Audible links
-- Cover image: decoded from `_next/image?url=` wrapper to direct `assets.podiumentertainment.com` URL
-- Description: extracted from HTML `<p>` tags between metadata and "This book is part of" section
 
-Verified: parsing works for series books (Columbus Day), standalone books (Enigma), and books without series position. Discovery yields 13,560 unique URLs.
+- Discovery via `sitemap.xml` (~13,500 URLs in one request) — avoids JavaScript lazy-loading
+- CSS selector parsing (no JSON-LD on this site)
+- HTML content quirk: Scrapling's `FetcherSession` returns `html_content` but `text` is empty
+- Extracts `podium_id` from URL path (`/titles/{id}/{slug}`) for deduplication
+- ISBN extraction from retailer links (Bookshop.org, B&N, Audiobooks.com, Walmart)
+- ASIN extraction from Amazon/Audible links
 
-## 2026-06-28: Amazon UK universal source
+## 2026-06-29: README and LICENSE
 
-Explored the Amazon UK website structure:
-- `/s?k={query}&i=stripbooks` — search endpoint returns results with `data-asin` attributes
-- `/dp/{ASIN}` — product pages with different layouts for Kindle vs audiobook vs print
-- Kindle pages have complete metadata (publisher, date, pages, ISBNs, description)
-- Audiobook pages use table layout (`<tr>/<th>/<td>`) instead of list layout (`<li>`)
-- Format section (`#formats`) contains links to all editions with ASINs
-- `tmm-grid-swatch-KINDLE` div contains the Kindle ASIN for the book
+Added `README.md` and `LICENSE` (MIT) to the repository root.
 
-Key discoveries:
-1. Amazon's search returns the most popular edition (often audiobook), not necessarily the one we want
-2. Non-Kindle pages can be redirected to Kindle pages by extracting the Kindle ASIN from format links
-3. The stealthy fetcher works reliably for Amazon UK (no CAPTCHA issues observed)
-4. Product details section has two formats: list (`<li>`) for print/Kindle, table (`<tr>/<th>/<td>`) for audiobooks
-5. The "Product details" heading may have whitespace before `</h2>` — match with just the text
+## 2026-06-30: Documentation suite
+
+Created comprehensive documentation in `docs/`:
+
+- `PROJECT.md` — purpose, goals, non-goals, constraints
+- `ARCHITECTURE.md` — system overview, components, data flow, dependencies
+- `DESIGN_DECISIONS.md` — 10 key decisions with alternatives and consequences
+- `IMPLEMENTATION_NOTES.md` — non-obvious details, quirks, edge cases
+- `DEVELOPMENT_LOG.md` — this file (chronological record)
+- `KNOWN_ISSUES.md` — limitations, technical debt, future improvements
+
+## 2026-06-30: Amazon UK universal source
 
 Implemented `amazon_uk.py`:
-- Uses stealthy fetcher for all requests (Amazon's WAF blocks plain HTTP)
-- Search strategy: ASIN > ISBN > title+author
-- `_parse_book_page()` detects non-Kindle pages and returns the Kindle ASIN for redirect
-- `_enrich_from_asin()` follows up to 2 redirects to reach the Kindle page
-- `_parse_product_details()` handles both list and table formats
-- `_parse_search_result()` extracts ASINs from search results and matches by title similarity
-- `_find_best_match()` uses Jaccard similarity on title words (threshold: 0.3)
-- Enriches: ASIN, ISBNs, publisher, publication date, page count, language, description, cover image
-- Title and authors set to sentinels (universal sources don't update these)
 
-Verified end-to-end:
-- ISBN search (`9780593135204`) → search → audiobook page → redirect to Kindle page → full metadata
-- Audiobook ASIN (`B08G9SKSHR`) → redirect to Kindle page → full metadata
-- Kindle ASIN (`B08FFJS3YW`) → direct page → full metadata
-- All tests return correct data: publisher (Cornerstone Digital), date (4 May 2021), pages (481), language (en)
+- Stealthy fetcher required (Amazon's WAF blocks plain HTTP)
+- Search strategy: ISBN → title+author → ASIN
+- Follows non-Kindle pages (audiobook, hardcover) to Kindle edition for complete metadata
+- Handles two product detail formats: list (`<li>`) for print/Kindle, table (`<tr>/<th>/<td>`) for audiobooks
+- Title/author similarity matching via Jaccard coefficient (threshold: 0.3)
+- Enrichment: ASIN identifiers, ISBN-10/13, publisher, date, pages, language, description, cover image
 
-## 2026-06-28: LNRelease scoped source
+## 2026-07-01: LNRelease scoped source
 
-Explored the Light Novel Releases data source:
-- Single JSON file at `lnrelease.github.io/data.json` contains the entire calendar
-- 7732 entries across 1022 series, 15 publishers
-- Entry format: `[series_id, url, publisher_idx, title, volume_str, format_type, isbn, date]`
-- Format types: 1=Paperback, 2=Ebook, 3=Hardcover, 4=Audiobook
-- Multiple entries per title+volume (different formats) — 5508 unique groups from 7732 entries
-- 4365 entries have ISBNs, 3367 (mostly audiobooks) do not
-- No author data in the source — universal sources can fill this in
+Implemented `lnrelease.py`:
 
-Key design decisions:
-- JSON data cached locally with 24-hour TTL (`~/.book-metadata-scraper/cache/lnrelease/data.json`)
-- Entries grouped by (title, volume) so different format editions merge into one book record
-- Session type is HTTP (GitHub Pages, no anti-bot protection)
-- Format-specific ISBN identifiers: `isbn_ebook`, `isbn_paperback`, `isbn_hardcover`, `isbn_audiobook`
-- Canonical `isbn13` identifier (digits only) added when ISBN is exactly 13 digits
-- Earliest release date across formats used as `published_date`
-- No authors (empty list) — universal sources handle this
+- Data source: single JSON file at `lnrelease.github.io/data.json` (~10,000 entries)
+- JSON caching with 24-hour TTL in `~/.book-metadata-scraper/cache/lnrelease/`
+- Groups entries by (title, volume) — different format editions merge into one record
+- Format-specific ISBN identifiers (ebook, paperback, hardcover, audiobook)
+- No authors (light novels); series name and position from lookup tables
+- Session type: HTTP (GitHub Pages)
 
-Verified:
-- Multi-format grouping works (7th Time Loop Vol 1: ebook + paperback ISBNs combined)
-- Single format works (1000 Words Left to Live: hardcover only)
-- Audiobook entries correctly inherit ISBNs from their group
-- 5508 unique title+volume groups produced from 7732 raw entries
+## 2026-07-02: Mountaindale Press scoped source
 
-## 2026-06-28: Shadow Alley Press scoped source
+Implemented `mountaindale.py`:
 
-Explored the Shadow Alley Press website structure:
-- `/library/` page lists 58 series as links to `/book-series/{slug}/` pages
-- Series pages contain article elements for each book (article order = series position)
-- Individual book pages at `/book/{slug}/` have full metadata
-- Two WordPress templates in use:
-  1. **Genesis** (older books): `<h1 class="entry-title">`, `<span class="book-series-book">`, `itemprop="text"` for description, metadata in `<li>` items
-  2. **Block editor** (newer books): `<h2 class="wp-block-post-title">`, `<p class="book-series-book">`, description in `<p class="wp-block-paragraph">` tags
-- Article CSS classes contain metadata: `book-authors-{slug}`, `book-series-{slug}`, `book-tags-{slug}`, `book-genres-{slug}`
-- No JSON-LD on book pages, but articles have `CreativeWork` microdata
-- Standalone books (not in any series) exist as New Releases on the library page
+- Data source: Shopify collections API (`/collections/all-books/products.json`)
+- Single HTTP request with pagination (250 products per page)
+- Filters out bundles/box sets by title patterns and variant count
+- Author from `vendor` field (skips "Amazon" entries which aren't real authors)
+- Series name extracted from title patterns and tags
+- Genres from tags (LitrPG, GameLit, etc.)
+- Identifiers: `mountaindale_id` from Shopify product handle
 
-Key challenges:
-1. The `itemprop="headline"` attribute is on the site header's `<h1>`, not the book title — must use `entry-title` class instead
-2. The `wp-block-post-title` regex must match actual HTML elements, not CSS selectors inside `<style>` tags
-3. Block template has no `<li>` metadata items — pages extracted from different location
-4. Block template series info uses `<p>` not `<span>` for `book-series-book`
-5. Block template description requires stripping `<style>`/`<script>` blocks first
+## 2026-07-03: Shadow Alley Press scoped source
 
 Implemented `shadow_alley.py`:
+
 - Discovery: library page → series pages (article order = position) → book URLs; also standalone books from New Releases
-- Parsing: dual-template support (Genesis + block editor)
+- Dual-template support (Genesis + block editor)
 - Title: `entry-title` → `wp-block-post-title` → `og:title` fallback
 - Authors: from article CSS classes (`book-authors-{slug}` → human-readable name)
 - Series: from `book-series-book` element (works for both `<span>` and `<p>`)
@@ -177,3 +117,19 @@ Verified:
 - Block template: Wayspring Wildshaper — title, author, series #3, genres, pages, description (905 chars)
 - Block template: Apocalypse Redux 2 — title, author, genres, pages, description (box set)
 - Discovery: 58 series processed, positions correctly assigned from article order
+
+## 2026-07-03: CLI --list-sources flag
+
+Added `--list-sources` command-line flag to list all available sources and their enabled status.
+
+- Prints formatted table: source name, type (scoped/universal), session type (http/stealthy), enabled/disabled
+- Reads `enabled_scoped_sources` and `enabled_universal_sources` from config
+- Exits after printing (no database required)
+- Example output:
+  ```
+  Available sources:
+    SOURCE              TYPE       SESSION   STATUS
+    aethon_books        scoped     http        disabled
+    google_books        universal  http        disabled
+    amazon_uk           universal  stealthy    disabled
+  ```
