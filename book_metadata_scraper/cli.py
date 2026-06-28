@@ -49,15 +49,66 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Override log_level from config",
     )
+    parser.add_argument(
+        "--list-sources",
+        action="store_true",
+        help="List all available sources and whether they are enabled, then exit",
+    )
     return parser.parse_args()
+
+
+def list_sources(config: ScraperConfig) -> None:
+    """Print a table of all registered sources and their enabled status."""
+    all_scoped = registry.list_scoped_sources()
+    all_universal = registry.list_universal_sources()
+
+    # Collect (name, type, session_type, enabled)
+    rows: list[tuple[str, str, str, bool]] = []
+    for name in sorted(all_scoped):
+        cls = registry.get_scoped_source(name)
+        rows.append((name, "scoped", cls.session_type, name in config.enabled_scoped_sources))
+    for name in sorted(all_universal):
+        cls = registry.get_universal_source(name)
+        rows.append((name, "universal", cls.session_type, name in config.enabled_universal_sources))
+
+    if not rows:
+        print("No sources registered.")
+        return
+
+    # Column widths
+    name_w = max(len(r[0]) for r in rows)
+    type_w = max(len(r[1]) for r in rows)
+    sess_w = max(len(r[2]) for r in rows)
+
+    header = (
+        f"  {'SOURCE':<{name_w}}  {'TYPE':<{type_w}}  {'SESSION':<{sess_w}}  STATUS"
+    )
+    separator = f"  {'─' * name_w}  {'─' * type_w}  {'─' * sess_w}  {'─' * 7}"
+
+    print("Available sources:")
+    print(header)
+    print(separator)
+    for name, stype, session, enabled in rows:
+        status = "✓ enabled" if enabled else "  disabled"
+        print(f"  {name:<{name_w}}  {stype:<{type_w}}  {session:<{sess_w}}  {status}")
+
+    print()
+    n_enabled = sum(1 for r in rows if r[3])
+    print(f"  {len(rows)} source(s) available, {n_enabled} enabled.")
 
 
 def main() -> None:
     """Main entry point."""
     args = parse_args()
 
-    # Load and apply CLI overrides
+    # Load config (--list-sources needs it but doesn't require all fields)
     config: ScraperConfig = load_config(args.config)
+
+    if args.list_sources:
+        list_sources(config)
+        return
+
+    # Apply CLI overrides
     if args.db:
         config.db_path = args.db
     if args.log_level:
