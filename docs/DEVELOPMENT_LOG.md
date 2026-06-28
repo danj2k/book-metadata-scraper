@@ -132,4 +132,16 @@ Added `--list-sources` command-line flag to list all available sources and their
     aethon_books        scoped     http        disabled
     google_books        universal  http        disabled
     amazon_uk           universal  stealthy    disabled
-  ```
+    ```
+
+    ## 2026-07-03: Per-source rate limiting
+
+    Added per-source rate limiting to support sources that need different request cadences:
+
+    - `BaseSource.rate_limit` class attribute (default `None`) — each source can declare its own minimum seconds between requests
+    - `BaseSource.fetch()` convenience method — routes to `fetch_http`/`fetch_stealthy` based on `session_type` and passes `self.rate_limit` as `min_interval`
+    - `SessionManager.fetch_http()` gained a `min_interval` keyword argument that overrides the global `http_rate_limit` for a single call
+    - `MountaindalePressSource` set to `rate_limit = 1.0` (1 req/sec) — Shopify's WAF returns 429 on faster requests
+    - Sources that don't set `rate_limit` are unaffected — `self.fetch()` falls through to the global rate limit (or no limit if unset)
+
+    Motivation: Mountaindale Press uses Shopify's storefront API which rate-limits aggressively. Running without rate limiting produced 429 errors during catalog fetches. The global rate limit was left unset so faster sources (Aethon, Podium, etc.) are not slowed down.

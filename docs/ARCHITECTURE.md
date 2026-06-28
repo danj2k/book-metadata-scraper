@@ -43,7 +43,7 @@ Entry point. Parses `--config`, `--db`, `--log-level` arguments. Loads TOML conf
 `ScraperConfig` dataclass with sensible defaults. Loaded from a TOML file. Per-source config is a nested dict (`source_config.<name>`).
 
 ### Fetcher (`fetcher.py`)
-`SessionManager` owns two Scrapling sessions: `FetcherSession` for plain HTTP (APIs, simple sites) and `AsyncStealthySession` for sites with anti-bot protection. A shared `asyncio.Semaphore` caps total concurrency. An optional `http_rate_limit` enforces a minimum interval between HTTP requests using a monotonic clock and an asyncio lock.
+`SessionManager` owns two Scrapling sessions: `FetcherSession` for plain HTTP (APIs, simple sites) and `AsyncStealthySession` for sites with anti-bot protection. A shared `asyncio.Semaphore` caps total concurrency. An optional `http_rate_limit` enforces a minimum interval between HTTP requests using a monotonic clock and an asyncio lock.  Individual sources can declare a per-source `rate_limit` (class attribute on `BaseSource`) and call `self.fetch()` instead of `self.session.fetch_http()` — the convenience method passes the rate limit through as `min_interval`, overriding the global for that source.
 
 ### Orchestrator (`orchestrator.py`)
 Top-level controller. Runs scoped sources first (discovery + parsing), then universal sources (enrichment). Handles the `(url, position)` tuple form from discovery. Tracks run statistics (discovered, inserted, updated, skipped, errors). Each source is wrapped in a try/except so one failing source doesn't abort the run.

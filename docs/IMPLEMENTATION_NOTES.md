@@ -18,6 +18,8 @@ The rate limiter uses `time.monotonic()` (immune to system clock changes) and an
 
 **Edge case:** If `http_rate_limit` is set and a source uses `fetch_stealthy()`, the stealthy requests are not rate-limited. This is intentional — browser-based fetches have their own natural delays from page rendering.
 
+**Per-source rate limiting:** Sources can set `rate_limit = 1.0` (seconds) as a class attribute and use the `self.fetch()` convenience method instead of `self.session.fetch_http()`. The `fetch()` method routes to the correct session type and passes `self.rate_limit` as `min_interval` to `SessionManager.fetch_http()`, overriding the global `http_rate_limit` for that source. This lets publishers with aggressive WAFs (e.g. Mountaindale's Shopify) get their own rate limit without slowing down other sources.
+
 ## COALESCE update strategy
 
 `update_book_nulls` builds a single UPDATE statement with COALESCE for each non-NULL field in the incoming BookData. If all fields in the incoming data are NULL, no UPDATE is executed. The method always commits after updating, even if no rows were actually changed — this is harmless and keeps the code simple.
