@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+
+# Runtime data — these are instance-specific, not project files
+book_metadata.db
+book_metadata.db-wal
+book_metadata.db-shm
+*.log
+
+# Configuration containing secrets (API keys etc.)
+# Commit a scraper.toml.example with placeholder values instead
+scraper.toml

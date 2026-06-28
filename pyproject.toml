@@ -1,0 +1,20 @@
+[project]
+name = "book-metadata-scraper"
+version = "0.1.0"
+description = "Scrape book metadata from multiple sources into a local SQLite database"
+requires-python = ">=3.12"
+dependencies = [
+    "scrapling[fetchers]",
+    "aiosqlite",
+    # tomllib is stdlib in 3.11+, no extra needed
+]
+
+[project.scripts]
+book-metadata-scraper = "book_metadata_scraper.cli:main"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["book_metadata_scraper*"]
