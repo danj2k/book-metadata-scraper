@@ -1,325 +1,327 @@
-"""Mountaindale Press scoped source plugin.
+"""Mountaindale Press scoped source.
 
-Discovers and parses book metadata from https://www.mountaindalepress.store/.
+Data source:
+- Shopify collections API: ``/collections/all-books/products.json``
+  Returns structured JSON with all products in the "All Books" collection.
+  Limited to 250 products per request; paginated with ``page`` parameter.
 
-Discovery strategy
-------------------
-Mountaindale Press runs on Shopify.  Their ``/collections/all-books/products.json``
-endpoint returns all book products (currently ~144) in a single paginated JSON
-response (limit=250 covers everything).  This avoids JavaScript-rendered catalog
-pages entirely.
+Discovery strategy:
+- Fetch all products from the Shopify collections API.
+- Filter out bundles and box sets by title/variant count.
+- Yield the product handle URL for each individual book.
 
-``discover_book_urls`` fetches the collection JSON once, filters out non-book
-product types (merch, clothing, etc.) and bundle/box-set products, then yields
-the canonical URL for each individual book.
+Book parsing:
+- Extract metadata from the Shopify JSON response.
+- Title is cleaned of "Kindle Edition" suffix and series info in parentheses.
+- Author extracted from the ``vendor`` field (collection endpoint provides
+  correct author names for most products).
+- Series name extracted from tags (e.g., ``"the-completionist-chronicles-books"``
+  becomes ``"The Completionist Chronicles"``).
+- Series position extracted from the title (e.g., ``"(The Metier Apocalypse Book 2)"``
+  becomes ``2.0``).
+- Cover image URL from the product images.
+- Description from the ``body_html`` field (HTML stripped).
+- Price from the first variant.
+- No ISBNs available in the Shopify data.
 
-Parsing
--------
-Each product in the Shopify JSON carries:
-- ``title`` -- often includes series info, e.g.
-  ``"Uncapped | Completionist Chronicles Book 14"``
-- ``body_html`` -- description (HTML)
-- ``vendor`` -- typically the author name (e.g. "Dakota Krout")
-- ``tags`` -- series abbreviations, genre labels, format tags
-- ``product_type`` -- "Books", "E-books", "Hardcover", "Audiobook"
-- ``variants[].sku`` -- sometimes an ASIN
-- ``images`` -- cover image URLs
-- ``published_at`` -- publication date
+Identifiers:
+- ``mountaindale_id``: The Shopify product handle (e.g.,
+  ``"attuned-dungeon-an-apocalyptic-litrpg-adventure-the-metier-apocalypse-book-2-kindle-edition-b0bq4wr7t6"``).
 
-Series name and position are parsed from the title using common Mountaindale
-title patterns.  Author comes from the ``vendor`` field.  ISBNs are not
-available in the Shopify API; ASINs are extracted from SKU when present.
-
-Rate limiting
--------------
-The standard HTTP session is used.  ``SessionManager`` enforces the configured
-``http_rate_limit`` globally.  Discovery is a single fetch; individual book
-pages are not fetched (all data comes from the collection JSON).
+Session type: HTTP (Shopify API is plain JSON, no anti-bot protection).
 """
 
-import json
 import logging
 import re
+from html import unescape
 from typing import AsyncIterator
 
-from book_metadata_scraper.fetcher import SESSION_HTTP
 from book_metadata_scraper.models import AuthorData, BookData
 from book_metadata_scraper.sources.base import BaseScopedSource
 from book_metadata_scraper.sources.registry import scoped_source
+from book_metadata_scraper.fetcher import SESSION_HTTP
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://www.mountaindalepress.store"
-COLLECTION_URL = f"{BASE_URL}/collections/all-books/products.json?limit=250"
-
-# Product types considered to be individual books (not merch)
-_BOOK_PRODUCT_TYPES = {"books", "e-books", "hardcover", "audiobook", "audiobooks", ""}
-
-# Tags that indicate bundles/box sets (excluded from discovery)
-_BUNDLE_TAGS = {"box set", "bundle", "big bundles"}
-
-# ASIN regex: 10-char alphanumeric starting with B0
-_Asin_RE = re.compile(r"^[A-Z0-9]0[A-Z0-9]{8}$")
-
-# Common Mountaindale title patterns for series extraction.
-# Each pattern has named groups: ?P<series> and ?P<pos>.
-_SERIES_PATTERNS = [
-    # "Title | Series Name Book 14"
-    re.compile(
-        r"\|\s*(?P<series>.+?)\s+Book\s+(?P<pos>\d+(?:\.\d+)?)\s*[!!]?\s*$",
-        re.IGNORECASE,
-    ),
-    # "Title | Book 1 in the Series Name"
-    re.compile(
-        r"\|\s*Book\s+(?P<pos>\d+(?:\.\d+)?)\s+in\s+(?:the\s+)?(?P<series>.+?)\s*[!!]?\s*$",
-        re.IGNORECASE,
-    ),
-    # "Title | Book 1 of 5 in The Divine Dungeon"
-    re.compile(
-        r"\|\s*Book\s+(?P<pos>\d+(?:\.\d+)?)\s+of\s+\d+\s+in\s+(?:the\s+)?(?P<series>.+?)\s*[!!]?\s*$",
-        re.IGNORECASE,
-    ),
-    # "Title | Series Name, Book 14"
-    re.compile(
-        r"\|\s*(?P<series>.+?),\s*Book\s+(?P<pos>\d+(?:\.\d+)?)\s*[!!]?\s*$",
-        re.IGNORECASE,
-    ),
-    # "Title | Book 14 of the Series Name"
-    re.compile(
-        r"\|\s*Book\s+(?P<pos>\d+(?:\.\d+)?)\s+of\s+(?:the\s+)?(?P<series>.+?)\s*[!!]?\s*$",
-        re.IGNORECASE,
-    ),
-]
+# Tags that indicate a bundle or box set (to be filtered out)
+BUNDLE_TAGS = {"bundle", "box set", "big-bundles-of-books", "sets-and-bundles"}
 
 
-def _normalise_url(url: str) -> str:
-    """Ensure a consistent absolute URL with no trailing slash."""
-    url = url.rstrip("/")
-    if url.startswith("/"):
-        url = BASE_URL + url
-    return url
-
-
-def _strip_html(html: str) -> str:
-    """Remove HTML tags and collapse whitespace."""
-    text = re.sub(r"<[^>]+>", " ", html)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text
-
-
-def _parse_series_from_title(title: str) -> tuple[str | None, float | None]:
-    """Extract series name and position from a Mountaindale product title.
-
-    Returns (series_name, series_position) — either or both may be None.
-    """
-    # Skip titles that don't contain a pipe separator
-    if "|" not in title:
-        return None, None
-
-    for pattern in _SERIES_PATTERNS:
-        m = pattern.search(title)
-        if m:
-            series_name = m.group("series").strip()
-            # Remove leading "the " if present
-            series_name = re.sub(r"^the\s+", "", series_name, flags=re.IGNORECASE)
-
-            try:
-                position = float(m.group("pos"))
-            except (ValueError, TypeError):
-                position = None
-
-            return series_name, position
-
-    return None, None
-
-
-def _is_book_product(product: dict) -> bool:
-    """Return True if the product is an individual Mountaindale book (not merch/bundle/3P)."""
-    product_type = (product.get("product_type") or "").lower()
-    if product_type not in _BOOK_PRODUCT_TYPES:
-        return False
-
-    # Exclude Amazon-vendor products (third-party Kindle listings)
-    vendor = (product.get("vendor") or "").strip()
-    if vendor.lower() == "amazon":
-        return False
-
-    # Check tags for bundle/box-set indicators
-    tags = product.get("tags", "")
-    if isinstance(tags, str):
-        tag_list = [t.strip().lower() for t in tags.split(",")]
-    else:
-        tag_list = [t.lower() for t in tags]
-
-    for tag in tag_list:
-        if tag in _BUNDLE_TAGS:
-            return False
-
-    return True
-
-
-def _extract_asin_from_sku(sku: str | None) -> str | None:
-    """Extract an ASIN from a variant SKU if it matches the ASIN pattern."""
-    if not sku:
+def _strip_html(html: str | None) -> str | None:
+    """Remove HTML tags and decode entities."""
+    if not html:
         return None
-    sku = sku.strip()
-    if _Asin_RE.match(sku):
-        return sku
-    return None
+    # Remove tags
+    text = re.sub(r"<[^>]+>", "", html)
+    # Decode HTML entities
+    text = unescape(text)
+    # Collapse whitespace
+    text = re.sub(r"\s+", " ", text).strip()
+    return text if text else None
+
+
+def _extract_series_info(title: str, tags: list[str]) -> tuple[str | None, float | None]:
+    """Extract series name and position from title and tags.
+
+    Returns (series_name, series_position).
+    """
+    series_name = None
+    series_position = None
+
+    # Try to extract series from title pattern: "(Series Name Book N)"
+    series_match = re.search(r"\(([^)]+?)\s+Book\s+(\d+(?:\.\d+)?)\)", title)
+    if series_match:
+        series_name = series_match.group(1).strip()
+        series_position = float(series_match.group(2))
+    else:
+        # Try pattern without "Book": "(Series Name N)"
+        series_match = re.search(r"\(([^)]+?)\s+(\d+(?:\.\d+)?)\)", title)
+        if series_match:
+            series_name = series_match.group(1).strip()
+            series_position = float(series_match.group(2))
+
+    # If no series from title, try to extract from tags
+    if not series_name:
+        for tag in tags:
+            # Tags like "the-completionist-chronicles-books" or "metier-apocalypse-books"
+            if tag.endswith("-books") and not tag.startswith("all-") and not tag.startswith("signed-"):
+                # Convert kebab-case to title case
+                series_name = tag.replace("-books", "").replace("-", " ").title()
+                break
+            # Tags like "the-completionist-chronicles"
+            elif tag.startswith("the-") and not tag.startswith("the-undying-"):
+                series_name = tag.replace("-", " ").title()
+                break
+
+    return series_name, series_position
+
+
+def _clean_title(title: str) -> str:
+    """Clean up the title by removing Kindle Edition suffix and other noise."""
+    # Remove "Kindle Edition" suffix
+    title = re.sub(r"\s+Kindle Edition$", "", title)
+    # Remove series info in parentheses at the end
+    title = re.sub(r"\s*\([^)]*\)\s*$", "", title)
+    return title.strip()
+
+
+def _is_bundle(product: dict) -> bool:
+    """Check if a product is a bundle or box set."""
+    title = product.get("title", "").lower()
+    tags = [t.lower() for t in product.get("tags", [])]
+
+    # Check title for bundle indicators
+    if any(word in title for word in ["bundle", "collection", "box set", "signed paperback collection"]):
+        return True
+
+    # Check tags for bundle indicators
+    if any(tag in BUNDLE_TAGS for tag in tags):
+        return True
+
+    # Check if product has multiple variants with different SKUs
+    # (bundles often have multiple book variants)
+    variants = product.get("variants", [])
+    if len(variants) > 5:  # Heuristic: more than 5 variants likely means bundle
+        return True
+
+    return False
 
 
 @scoped_source
-class MountaindalePress(BaseScopedSource):
-    """Mountaindale Press — https://www.mountaindalepress.store/"""
+class MountaindalePressSource(BaseScopedSource):
+    """Mountaindale Press scoped source."""
 
-    name = "mountaindale"
+    name = "mountaindale_press"
     session_type = SESSION_HTTP
 
-    def __init__(self, session, config: dict):
-        super().__init__(session, config)
-        self._products: list[dict] = []
-        self._url_to_product: dict[str, dict] = {}
+    BASE_URL = "https://www.mountaindalepress.store"
+    COLLECTION_URL = f"{BASE_URL}/collections/all-books/products.json"
 
-    async def _ensure_loaded(self) -> None:
-        """Fetch and cache the collection JSON if not already in memory."""
-        if self._products:
-            return
+    async def discover_book_urls(self) -> AsyncIterator[tuple[str, float | None]]:
+        """Discover book URLs from the Shopify collections API.
 
-        logger.info("Fetching Mountaindale Press books from %s", COLLECTION_URL)
-        try:
-            response = await self.session.fetch_http(COLLECTION_URL)
-        except Exception:
-            logger.exception("Failed to fetch Mountaindale Press collection")
-            return
+        Yields tuples of (url, series_position) for each book.
+        """
+        page = 1
+        total_products = 0
 
-        # Parse JSON from the response
-        try:
-            data = response.json()
-        except Exception:
-            # Fallback: try parsing text content
-            text = response.text or response.html_content or ""
+        while True:
+            url = f"{self.COLLECTION_URL}?limit=250&page={page}"
+            logger.info("Fetching Mountaindale catalog page %d", page)
+
+            response = await self.session.fetch_http(url)
+            if response.status != 200:
+                logger.warning("Failed to fetch catalog page %d: HTTP %d", page, response.status)
+                break
+
             try:
-                data = json.loads(str(text))
-            except (json.JSONDecodeError, TypeError):
-                logger.error("Failed to parse Mountaindale Press collection JSON")
-                return
+                data = response.json()
+            except Exception as e:
+                logger.warning("Failed to parse catalog JSON on page %d: %s", page, e)
+                break
 
-        all_products = data.get("products", [])
+            products = data.get("products", [])
+            if not products:
+                break
 
-        # Filter to individual books only
-        self._products = [p for p in all_products if _is_book_product(p)]
+            for product in products:
+                if _is_bundle(product):
+                    logger.debug("Skipping bundle: %s", product.get("title"))
+                    continue
 
-        # Build URL → product lookup
-        for product in self._products:
-            handle = product.get("handle", "")
-            url = _normalise_url(f"/products/{handle}")
-            self._url_to_product[url] = product
+                handle = product.get("handle", "")
+                if not handle:
+                    continue
 
-        logger.info(
-            "Loaded %d Mountaindale Press products (%d after filtering)",
-            len(all_products),
-            len(self._products),
-        )
+                # Extract series position from title for the yield
+                title = product.get("title", "")
+                tags = product.get("tags", [])
+                _, series_position = _extract_series_info(title, tags)
 
-    async def discover_book_urls(self) -> AsyncIterator[str]:
-        """Yield the canonical URL for each individual book."""
-        await self._ensure_loaded()
+                book_url = f"{self.BASE_URL}/products/{handle}"
+                yield book_url, series_position
+                total_products += 1
 
-        for product in self._products:
-            handle = product.get("handle", "")
-            url = _normalise_url(f"/products/{handle}")
-            yield url
+            # Check if there are more pages
+            if len(products) < 250:
+                break
+
+            page += 1
+
+        logger.info("Discovered %d books from Mountaindale catalog", total_products)
 
     async def parse_book(self, response) -> BookData | None:
-        """Build a BookData from the cached Shopify product data.
+        """Parse a Mountaindale Press book page.
 
-        The ``response`` parameter is used only for its ``url`` attribute.
-        All data comes from the collection JSON loaded during discovery.
+        This method is called with the response from the product page,
+        but we actually need the Shopify JSON data.  We'll fetch it
+        from the products.json endpoint instead.
         """
-        url = response.url if hasattr(response, "url") else None
-        if url is None:
-            logger.warning("parse_book called with no URL on response")
+        # Extract the product handle from the URL
+        url = response.url
+        handle_match = re.search(r"/products/([^?]+)", url)
+        if not handle_match:
+            logger.warning("Could not extract product handle from URL: %s", url)
             return None
 
-        # Normalise URL for lookup
-        url = _normalise_url(url)
-        product = self._url_to_product.get(url)
-        if product is None:
-            logger.warning("URL %s not found in Mountaindale Press cache", url)
+        handle = handle_match.group(1)
+
+        # Fetch the product data from the Shopify API
+        product_url = f"{self.BASE_URL}/products/{handle}.json"
+        product_response = await self.session.fetch_http(product_url)
+
+        if product_response.status != 200:
+            logger.warning("Failed to fetch product JSON for %s: HTTP %d", handle, product_response.status)
             return None
 
-        # --- Title ---
-        title = product.get("title", "").strip()
+        try:
+            product_data = product_response.json().get("product", {})
+        except Exception as e:
+            logger.warning("Failed to parse product JSON for %s: %s", handle, e)
+            return None
+
+        if not product_data:
+            logger.warning("No product data for %s", handle)
+            return None
+
+        # Fetch the collection data to get the correct vendor (author)
+        # The individual product endpoint sometimes returns "Amazon" as vendor
+        # but the collection endpoint has the correct author name
+        author_name = None
+        try:
+            collection_url = f"{self.COLLECTION_URL}?limit=250"
+            collection_response = await self.session.fetch_http(collection_url)
+            if collection_response.status == 200:
+                collection_data = collection_response.json()
+                for p in collection_data.get("products", []):
+                    if p.get("handle") == handle:
+                        author_name = p.get("vendor")
+                        break
+        except Exception as e:
+            logger.debug("Failed to fetch collection data: %s", e)
+
+        return self._parse_product(product_data, author_name)
+
+    def _parse_product(self, product: dict, author_name: str | None = None) -> BookData | None:
+        """Parse a Shopify product JSON into BookData."""
+        title = product.get("title", "")
         if not title:
-            logger.warning("Empty title for product at %s", url)
+            logger.warning("Product has no title")
             return None
 
-        # --- Series (parsed from title) ---
-        series_name, series_position = _parse_series_from_title(title)
+        # Clean the title
+        clean_title = _clean_title(title)
 
-        # --- Author (from vendor field) ---
-        authors: list[AuthorData] = []
-        vendor = (product.get("vendor") or "").strip()
-        if vendor and vendor.lower() != "mountaindale press":
-            authors.append(AuthorData(name=vendor))
+        # Extract tags
+        tags = product.get("tags", [])
 
-        # --- Description ---
-        body_html = product.get("body_html", "") or ""
-        description = _strip_html(body_html) if body_html else None
-        if description and not description.strip():
-            description = None
+        # Use provided author or fall back to vendor
+        if not author_name:
+            author_name = product.get("vendor")
 
-        # --- Publisher ---
-        publisher = "Mountaindale Press"
+        # Skip "Amazon" as it's not a real author
+        if author_name and author_name.lower() == "amazon":
+            logger.debug("Skipping 'Amazon' as author for product: %s", product.get("handle"))
+            author_name = None
 
-        # --- Published date ---
-        published_date = product.get("published_at")
-        if published_date:
-            # Shopify returns ISO 8601: "2025-12-09T20:47:10-06:00"
-            # Extract just the date portion
-            published_date = published_date[:10] if len(published_date) >= 10 else published_date
+        authors = [AuthorData(name=author_name)] if author_name else []
 
-        # --- Cover image ---
-        cover_image = None
+        # Extract series info
+        series_name, series_position = _extract_series_info(title, tags)
+
+        # Extract description from body_html
+        description = _strip_html(product.get("body_html"))
+
+        # Extract cover image
         images = product.get("images", [])
+        cover_image_url = None
         if images:
-            cover_image = images[0].get("src")
+            cover_image_url = images[0].get("src")
 
-        # --- Genres (from tags) ---
-        genres: list[str] = []
-        tags_raw = product.get("tags", "")
-        if isinstance(tags_raw, str):
-            tag_list = [t.strip() for t in tags_raw.split(",")]
-        else:
-            tag_list = list(tags_raw)
+        # Extract price from first variant
+        variants = product.get("variants", [])
+        price = None
+        if variants:
+            price_str = variants[0].get("price")
+            if price_str:
+                try:
+                    price = float(price_str)
+                except (ValueError, TypeError):
+                    pass
 
-        # Genre-relevant tags
-        _GENRE_TAGS = {"litRPG", "GameLit"}
-        for tag in tag_list:
-            if tag.lower() in {g.lower() for g in _GENRE_TAGS}:
-                genres.append(tag)
+        # Build identifiers
+        identifiers = {}
+        handle = product.get("handle")
+        if handle:
+            identifiers["mountaindale_id"] = handle
 
-        # --- Identifiers ---
-        identifiers: dict[str, str] = {}
-        for variant in product.get("variants", []):
-            asin = _extract_asin_from_sku(variant.get("sku"))
-            if asin:
-                identifiers.setdefault("asin", asin)
+        # Extract published date
+        published_at = product.get("published_at")
+        published_date = None
+        if published_at:
+            # Parse ISO format: "2025-05-28T12:03:31-05:00"
+            date_match = re.match(r"(\d{4}-\d{2}-\d{2})", published_at)
+            if date_match:
+                published_date = date_match.group(1)
 
-        # --- Language (assume English for Mountaindale) ---
-        language = "en"
+        # Extract genres from tags
+        genres = []
+        genre_tags = ["litrpg", "gamelit", "fantasy", "science fiction", "romance"]
+        for tag in tags:
+            tag_lower = tag.lower()
+            if tag_lower in genre_tags:
+                genres.append(tag.title())
 
         return BookData(
-            title=title,
+            title=clean_title,
             authors=authors,
             description=description,
-            publisher=publisher,
+            publisher="Mountaindale Press",
             published_date=published_date,
-            language=language,
             series=series_name,
             series_position=series_position,
-            cover_image_url=cover_image,
+            cover_image_url=cover_image_url,
             genres=genres,
             identifiers=identifiers,
-            source_url=url,
+            source_url=f"{self.BASE_URL}/products/{product.get('handle', '')}",
         )
