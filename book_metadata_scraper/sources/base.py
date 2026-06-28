@@ -43,8 +43,9 @@ class BaseSource(ABC):
     def __init__(self, session: SessionManager, config: dict):
         """
         Args:
-            session -- The shared SessionManager. Call self.session.fetch_http() or
-                       self.session.fetch_stealthy() as appropriate for this source.
+            session -- The shared SessionManager. Use self.fetch(url) to
+                       route through the session automatically based on
+                       session_type and rate_limit.
             config  -- The [source_config.<name>] block from scraper.toml, or {} if
                        not present. Source plugins should use .get() with defaults
                        for all keys so they remain functional without explicit config.

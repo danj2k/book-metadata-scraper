@@ -194,7 +194,7 @@ class PodiumEntertainment(BaseScopedSource):
         """
         logger.info("Fetching sitemap from %s", SITEMAP_URL)
         try:
-            response = await self.session.fetch_http(SITEMAP_URL)
+            response = await self.fetch(SITEMAP_URL)
         except Exception:
             logger.exception("Failed to fetch sitemap")
             return

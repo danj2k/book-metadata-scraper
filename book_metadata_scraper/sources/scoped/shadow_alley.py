@@ -235,7 +235,7 @@ class ShadowAlleyPress(BaseScopedSource):
         """
         logger.info("Fetching library page from %s", LIBRARY_URL)
         try:
-            response = await self.session.fetch_http(LIBRARY_URL)
+            response = await self.fetch(LIBRARY_URL)
         except Exception:
             logger.exception("Failed to fetch library page")
             return
@@ -282,7 +282,7 @@ class ShadowAlleyPress(BaseScopedSource):
             series_name = _slug_to_name(series_slug_m.group(1)) if series_slug_m else None
 
             try:
-                series_response = await self.session.fetch_http(series_url)
+                series_response = await self.fetch(series_url)
             except Exception:
                 logger.warning("Failed to fetch series page %s", series_url)
                 continue

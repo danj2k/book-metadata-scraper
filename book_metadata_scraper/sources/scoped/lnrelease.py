@@ -120,7 +120,7 @@ class LNReleaseSource(BaseScopedSource):
         # Fetch if cache missing or stale
         if not self._raw:
             logger.info("Fetching LNRelease data from %s", DATA_URL)
-            response = await self.session.fetch_http(DATA_URL)
+            response = await self.fetch(DATA_URL)
             # Scrapling returns the JSON as text in html_content or text
             text = response.text or response.html_content or ""
             self._raw = json.loads(text)

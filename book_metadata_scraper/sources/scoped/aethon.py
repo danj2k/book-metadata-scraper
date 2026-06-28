@@ -226,7 +226,7 @@ class AethonBooks(BaseScopedSource):
         # Step 1: Fetch the master series index
         logger.info("Fetching series index from %s/series/", BASE_URL)
         try:
-            index_response = await self.session.fetch_http(f"{BASE_URL}/series/")
+            index_response = await self.fetch(f"{BASE_URL}/series/")
         except Exception:
             logger.exception("Failed to fetch /series/ index page")
             return
@@ -247,7 +247,7 @@ class AethonBooks(BaseScopedSource):
         for i, series_url in enumerate(series_urls, 1):
             logger.debug("Fetching series %d/%d: %s", i, len(series_urls), series_url)
             try:
-                series_response = await self.session.fetch_http(series_url)
+                series_response = await self.fetch(series_url)
             except Exception:
                 logger.exception("Failed to fetch series page %s", series_url)
                 continue

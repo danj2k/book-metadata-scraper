@@ -145,3 +145,16 @@ Added `--list-sources` command-line flag to list all available sources and their
     - Sources that don't set `rate_limit` are unaffected — `self.fetch()` falls through to the global rate limit (or no limit if unset)
 
     Motivation: Mountaindale Press uses Shopify's storefront API which rate-limits aggressively. Running without rate limiting produced 429 errors during catalog fetches. The global rate limit was left unset so faster sources (Aethon, Podium, etc.) are not slowed down.
+
+## 2026-07-03: Migrate all sources to self.fetch()
+
+Updated all source plugins to use `self.fetch()` instead of calling `self.session.fetch_http()` / `self.session.fetch_stealthy()` directly:
+
+- `aethon.py` — 2 calls migrated
+- `shadow_alley.py` — 2 calls migrated
+- `podium.py` — 1 call migrated
+- `lnrelease.py` — 1 call migrated
+- `google_books.py` — 2 calls migrated (passes `google_search=False` through kwargs)
+- `amazon_uk.py` — 2 calls migrated (passes `timeout=30000` through kwargs)
+
+All sources now route through `BaseSource.fetch()`, which handles session type selection, per-source rate limit injection, and any future fetch-level concerns uniformly.

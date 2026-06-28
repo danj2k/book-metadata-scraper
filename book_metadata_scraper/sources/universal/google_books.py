@@ -179,7 +179,7 @@ class GoogleBooksSource(BaseUniversalSource):
             if api_key:
                 url += f"?key={api_key}"
             try:
-                response = await self.session.fetch_http(
+                response = await self.fetch(
                     url, google_search=False
                 )
                 data = response.json()
@@ -203,7 +203,7 @@ class GoogleBooksSource(BaseUniversalSource):
             return book
 
         try:
-            response = await self.session.fetch_http(
+            response = await self.fetch(
                 f"{BASE_URL}?{params}", google_search=False
             )
             data = response.json()

@@ -475,7 +475,7 @@ class AmazonUKSource(BaseUniversalSource):
         for _ in range(max_redirects):
             product_url = f"{BASE_URL}/dp/{asin}"
             try:
-                product_response = await self.session.fetch_stealthy(
+                product_response = await self.fetch(
                     product_url, timeout=30000
                 )
             except Exception:
@@ -531,7 +531,7 @@ class AmazonUKSource(BaseUniversalSource):
             return book
 
         try:
-            response = await self.session.fetch_stealthy(url, timeout=30000)
+            response = await self.fetch(url, timeout=30000)
         except Exception:
             logger.exception("Amazon UK: request failed for %s", url)
             return book
