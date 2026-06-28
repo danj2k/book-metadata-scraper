@@ -77,7 +77,14 @@ class Orchestrator:
             return
 
         try:
-            async for url in source.discover_book_urls():
+            async for item in source.discover_book_urls():
+                # Support both plain URLs and (url, position) tuples
+                if isinstance(item, tuple):
+                    url, discovery_position = item
+                else:
+                    url = item
+                    discovery_position = None
+
                 self._stats["discovered"] += 1
                 logger.debug("Discovered URL: %s", url)
 
@@ -110,6 +117,10 @@ class Orchestrator:
                     logger.warning("parse_book returned None for %s", url)
                     self._stats["skipped"] += 1
                     continue
+
+                # Apply series position from discovery if parse didn't set one
+                if discovery_position is not None and book_data.series_position is None:
+                    book_data.series_position = discovery_position
 
                 # Identity resolution
                 existing_id = await find_existing_book(book_data, self.repo)

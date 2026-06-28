@@ -60,12 +60,14 @@ class BaseScopedSource(BaseSource, ABC):
     source_type = "scoped"
 
     @abstractmethod
-    async def discover_book_urls(self) -> AsyncIterator[str]:
+    async def discover_book_urls(self) -> AsyncIterator[str | tuple[str, float | None]]:
         """Yield the URL of every book page found on this source's listing pages.
 
-        This should cover the full catalog, not just recent additions — the
-        orchestrator is responsible for filtering out books already in the DB
-        before calling parse_book().
+        Can yield either:
+        - A plain URL string: ``"https://example.com/book/123"``
+        - A (url, series_position) tuple: ``("https://example.com/book/123", 4.0)``
+
+        The orchestrator handles both forms transparently.
         """
         ...
 

@@ -1,8 +1,8 @@
 db_path = "book_metadata.db"
 concurrency_limit = 5
-# Minimum seconds between HTTP requests (None = no limit).  Set to 1.0 for
+# Minimum seconds between HTTP requests (0 = no limit).  Set to 1.0 for
 # publisher sites that require polite crawling.
-# http_rate_limit = 1.0
+min_interval = 0.0
 log_file = "book-metadata-scraper.log"
 log_level = "INFO"
 

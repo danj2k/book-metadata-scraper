@@ -139,12 +139,22 @@ def _parse_book_jsonld(data: dict, source_url: str) -> BookData | None:
                 identifiers["isbn13"] = ex_isbn_clean
             elif len(ex_isbn_clean) == 10 and "isbn10" not in identifiers:
                 identifiers["isbn10"] = ex_isbn_clean
-        # ASIN from the @id (Amazon URL)
-        ex_id = example.get("@id", "")
-        if "amazon" in ex_id or "audible" in ex_id:
-            asin_match = re.search(r"/dp/([A-Z0-9]{10})", ex_id)
-            if asin_match and "asin" not in identifiers:
-                identifiers["asin"] = asin_match.group(1)
+
+        # ASIN from @id or url (Amazon/Audible URLs)
+        ex_url = example.get("@id", "") or example.get("url", "")
+        fmt = example.get("bookFormat", "")
+        # Amazon uses /dp/, Audible uses /pd/
+        asin_match = re.search(r"/[dp]{2}/([A-Z0-9]{10})", ex_url)
+        if asin_match:
+            asin = asin_match.group(1)
+            if "audible" in ex_url:
+                identifiers["asin_audiobook"] = asin
+            elif "EBook" in fmt or "ebook" in fmt.lower():
+                identifiers["asin_ebook"] = asin
+            elif "Paperback" in fmt:
+                identifiers["asin_paperback"] = asin
+            elif "asin" not in identifiers:
+                identifiers["asin"] = asin
 
     # Page count
     page_count = None
@@ -207,8 +217,10 @@ class AethonBooks(BaseScopedSource):
     name = "aethon_books"
     session_type = SESSION_HTTP
 
-    async def discover_book_urls(self) -> AsyncIterator[str]:
-        """Yield book page URLs by walking: /series/ → series pages → hasPart."""
+    async def discover_book_urls(self) -> AsyncIterator[tuple[str, float | None]]:
+        """Yield (book_url, series_position) tuples by walking:
+        /series/ → series pages → hasPart.
+        """
         seen_urls: set[str] = set()
 
         # Step 1: Fetch the master series index
@@ -253,7 +265,7 @@ class AethonBooks(BaseScopedSource):
                 logger.warning("No CreativeWorkSeries JSON-LD found at %s", series_url)
                 continue
 
-            # Extract book URLs from hasPart
+            # Extract book URLs and positions from hasPart
             has_part = json_ld.get("hasPart", [])
             for book_entry in has_part:
                 if not isinstance(book_entry, dict):
@@ -262,9 +274,19 @@ class AethonBooks(BaseScopedSource):
                 if not book_url:
                     continue
                 book_url = _normalise_book_url(book_url)
+
+                # Extract position from hasPart entry
+                position = None
+                raw_pos = book_entry.get("position")
+                if raw_pos is not None:
+                    try:
+                        position = float(raw_pos)
+                    except (ValueError, TypeError):
+                        pass
+
                 if book_url not in seen_urls:
                     seen_urls.add(book_url)
-                    yield book_url
+                    yield (book_url, position)
 
         logger.info(
             "Discovery complete: %d unique book URLs from %d series",
