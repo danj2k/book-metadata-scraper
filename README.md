@@ -1,194 +1,101 @@
-# book-metadata-scraper
+# Book Metadata Scraper
 
-A Python tool for scraping book metadata from publisher websites and other
-sources, storing everything in a local SQLite database. Designed for readers
-who want to build and maintain a personal catalogue of book metadata with rich,
-authoritative data from publisher catalogues.
+A Python CLI tool that scrapes book metadata from multiple sources (publishers, retailers, aggregators) and stores the results in a local SQLite database for further processing.
 
 ## Features
 
-- **Multi-source scraping** — collect metadata from multiple sources via
-  pluggable source adapters. Each source is independent and can be enabled or
-  disabled in the configuration file.
-- **Scoped and universal sources** — *scoped* sources discover books from a
-  specific publisher or catalogue (e.g. Aethon Books), while *universal*
-  sources enrich already-discovered books with additional data (e.g. Google
-  Books).
-- **Intelligent identity resolution** — books are matched across sources using
-  ISBN, ASIN, Goodreads ID, or title+author fuzzy matching. Null values from
-  enrichment sources never overwrite scoped data.
-- **Polite rate limiting** — configurable per-host request intervals to avoid
-  overwhelming publisher sites.
-- **Async architecture** — concurrent fetching with configurable parallelism
-  via `asyncio` and `aiosqlite`.
-- **Idempotent** — re-running the scraper only fetches pages for books not
-  already in the database. Previously scraped book pages are never re-fetched.
+- **Scoped sources** that discover and scrape specific catalogs (e.g. a publisher's full catalogue)
+- **Universal sources** that enrich partial book data using external APIs
+- **Duplicate prevention** — books are identified by ISBN, ASIN, Goodreads ID, or title+author, so the same book is never scraped twice
+- **Incremental enrichment** — previously stored scoped fields are never overwritten by universal sources
+- **Enrichment tracking** — the database records which sources contributed to each book, and the last enrichment date, to avoid redundant re-scraping
+- **Configurable rate limiting** per source to respect target site limits
+- **Plugin architecture** — new sources are added by dropping a Python file into a package directory; no core changes needed
 
 ## Requirements
 
 - Python 3.12 or later
-- `uv` or `pip` for installation
+- uv (recommended) or pip
 
-## Installation
+## Quick Start
 
 ```bash
-# Clone the repository
-git clone <repo-url> book-metadata-scraper
-cd book-metadata-scraper
+# Clone and enter the repo
+git clone <repo-url> && cd book-metadata-scraper
 
-# Create a virtual environment and install
-python -m venv .venv
-source .venv/bin/activate
+# Install with uv
+uv sync
+
+# Or install with pip
+python3 -m venv .venv && source .venv/bin/activate
 pip install -e .
+
+# Copy and edit the example config
+cp scraper.toml.example scraper.toml
+# Edit scraper.toml with your preferred settings
+
+# Run
+uv run scraper                          # uses scraper.toml + books.db
+uv run scraper --config custom.toml     # custom config
+uv run scraper --db output.sqlite       # custom database path
+uv run scraper --log-level DEBUG        # verbose logging
 ```
 
 ## Configuration
 
-Copy the example configuration file and edit it:
-
-```bash
-cp scraper.toml.example scraper.toml
-```
-
-### Configuration options
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `db_path` | string | `book_metadata.db` | Path to the SQLite database file |
-| `concurrency_limit` | integer | `5` | Maximum number of concurrent HTTP requests |
-| `min_interval` | float | `0.0` | Minimum seconds between HTTP requests (per host). Set to `1.0` for polite crawling of publisher sites |
-| `log_file` | string | `book-metadata-scraper.log` | Path to the log file |
-| `log_level` | string | `INFO` | Logging verbosity: `DEBUG`, `INFO`, `WARNING`, or `ERROR` |
-| `enabled_scoped_sources` | list | `[]` | Names of scoped sources to activate |
-| `enabled_universal_sources` | list | `[]` | Names of universal sources to activate |
-| `source_config.<name>` | table | — | Per-source configuration (e.g. API keys) |
-
-### Example configuration
+Edit `scraper.toml` (see `scraper.toml.example` for all options):
 
 ```toml
-db_path = "book_metadata.db"
-concurrency_limit = 5
-min_interval = 1.0
-log_file = "book-metadata-scraper.log"
-log_level = "INFO"
-
-enabled_scoped_sources = ["aethon_books"]
-# enabled_universal_sources = ["google_books"]
-
-# [source_config.google_books]
-# api_key = "YOUR_KEY_HERE"
+rate_limits = { "aethon" = 1.0 }   # seconds between requests per source
+request_timeout = 30.0              # HTTP timeout in seconds
+http_max_concurrent = 10            # max simultaneous HTTP requests
+stealthy_max_concurrent = 3         # max simultaneous stealthy requests
+http_request_delay = 0.0            # global delay between HTTP requests
+stealthy_request_delay = 0.0        # global delay between stealthy requests
+user_agent = "BookMetadataScraper/1.0"  # custom User-Agent
 ```
 
-## Usage
+Set `--config NONE` to disable the config file entirely and use defaults.
 
-Run the scraper with default settings (reads `scraper.toml` from the current
-directory):
+## How It Works
 
-```bash
-book-metadata-scraper
-```
+1. **Discovery** — scoped sources crawl their target sites and collect book URLs (skipping books already in the database).
+2. **Parsing** — each discovered book page is fetched and parsed into structured metadata.
+3. **Identity resolution** — the tool checks whether the book already exists in the database (by ISBN, ASIN, title+author, etc.).
+4. **Storage** — new books are inserted; existing books are updated only if the new source provides data in fields the previous source left empty.
+5. **Enrichment** — universal sources can then fill in gaps (e.g. Goodreads rating, Amazon ASINs) without overwriting scoped data.
 
-### Command-line options
-
-```
-book-metadata-scraper [--config PATH] [--db PATH] [--log-level LEVEL]
-```
-
-| Option | Description |
-|---|---|
-| `--config PATH` | Path to configuration file (default: `./scraper.toml`) |
-| `--db PATH` | Override the database path from config |
-| `--log-level LEVEL` | Override the log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
-
-### Examples
-
-```bash
-# Run with a custom config
-book-metadata-scraper --config /etc/my-scraper.toml
-
-# Override the database location
-book-metadata-scraper --db /data/books.db
-
-# Run with verbose logging
-book-metadata-scraper --log-level DEBUG
-```
-
-## Data model
-
-Each scraped book is stored with the following metadata:
-
-- **Title and subtitle**
-- **Authors** (with role — author, editor, narrator, etc.)
-- **Description** (publisher-supplied synopsis)
-- **Publisher**
-- **Publication date**
-- **Page count and language**
-- **Series name and position**
-- **Cover image URL**
-- **Genres / tags**
-- **Identifiers** — ISBN-13, ASIN (per format: ebook, paperback, audiobook),
-  Goodreads ID, and more
-
-## Source plugins
-
-Sources are Python modules placed in either `book_metadata_scraper/sources/scoped/`
-or `book_metadata_scraper/sources/universal/`. They register themselves
-automatically via the `@scoped_source` or `@universal_source` decorators.
-
-### Available sources
-
-| Source | Type | Description |
-|---|---|---|
-| `aethon_books` | Scoped | Discovers and scrapes all books from the Aethon Books catalogue |
-
-### Writing a new source
-
-Create a new `.py` file in the appropriate `sources/` subdirectory. Your source
-class should inherit from `BaseScopedSource` or `BaseUniversalSource` and
-implement the required interface methods. Register it with the corresponding
-decorator:
-
-```python
-from book_metadata_scraper.sources.base import BaseScopedSource
-from book_metadata_scraper.sources.registry import scoped_source
-
-@scoped_source("my_source")
-class MySource(BaseScopedSource):
-    async def discover_book_urls(self):
-        # Yield (url, position) tuples for books to scrape
-        ...
-
-    async def parse_book(self, url, session):
-        # Fetch the page and return a BookData instance
-        ...
-```
-
-## Project structure
+## Project Structure
 
 ```
 book-metadata-scraper/
-├── pyproject.toml
 ├── scraper.toml.example
-├── book_metadata_scraper/
-│   ├── cli.py              # Entry point
-│   ├── config.py           # Configuration loading
-│   ├── fetcher.py          # HTTP session management with rate limiting
-│   ├── matching.py         # Cross-source identity resolution
-│   ├── models.py           # BookData and AuthorData dataclasses
-│   ├── normalise.py        # Author name normalisation
-│   ├── orchestrator.py     # Discovery → fetch → parse → store pipeline
-│   ├── db/
-│   │   ├── schema.py       # SQLite schema (8 tables)
-│   │   └── repository.py   # Async database access layer
-│   └── sources/
-│       ├── base.py         # Base source interfaces
-│       ├── registry.py     # Source auto-registration
-│       ├── scoped/         # Publisher-specific sources
-│       │   └── aethon.py   # Aethon Books
-│       └── universal/      # Cross-source enrichment plugins
+├── pyproject.toml
+└── book_metadata_scraper/
+    ├── cli.py                  # CLI entry point
+    ├── config.py               # Config loading
+    ├── fetcher.py              # HTTP session management & rate limiting
+    ├── matching.py             # Identity resolution & duplicate detection
+    ├── models.py               # BookData & AuthorData dataclasses
+    ├── normalise.py            # Author name deduplication
+    ├── orchestrator.py         # Discovery → enrichment pipeline
+    ├── db/
+    │   ├── schema.py           # SQLite schema & migrations
+    │   └── repository.py       # Async database operations
+    └── sources/
+        ├── base.py             # Base classes for source plugins
+        ├── registry.py         # Source registration decorators
+        ├── scoped/             # Scoped source plugins (one per site)
+        └── universal/          # Universal source plugins (APIs)
 ```
+
+## Adding a New Source
+
+1. Create a new Python file in `sources/scoped/` or `sources/universal/`.
+2. Define a class inheriting from `BaseScopedSource` or `BaseUniversalSource`.
+3. Decorate with `@scoped_source` or `@universal_source`.
+4. The source is automatically registered on import — no changes to core code needed.
 
 ## License
 
-This project is licensed under the MIT License. See [LICENSE](LICENSE) for
-details.
+MIT
