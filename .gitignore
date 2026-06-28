@@ -15,3 +15,6 @@ book_metadata.db-shm
 # Configuration containing secrets (API keys etc.)
 # Commit a scraper.toml.example with placeholder values instead
 scraper.toml
+
+# Local cache (fetched data, regenerated on demand)
+.cache/
