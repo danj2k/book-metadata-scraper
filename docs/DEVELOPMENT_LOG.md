@@ -112,4 +112,30 @@ Verified end-to-end:
 - ISBN search (`9780593135204`) → search → audiobook page → redirect to Kindle page → full metadata
 - Audiobook ASIN (`B08G9SKSHR`) → redirect to Kindle page → full metadata
 - Kindle ASIN (`B08FFJS3YW`) → direct page → full metadata
-- All tests return correct data: publisher (Cornerstone Digital), date (4 May 2021), pages (481), language (en)
+| All tests return correct data: publisher (Cornerstone Digital), date (4 May 2021), pages (481), language (en)
+
+## 2026-06-28: LNRelease scoped source
+
+Explored the Light Novel Releases data source:
+- Single JSON file at `lnrelease.github.io/data.json` contains the entire calendar
+- 7732 entries across 1022 series, 15 publishers
+- Entry format: `[series_id, url, publisher_idx, title, volume_str, format_type, isbn, date]`
+- Format types: 1=Paperback, 2=Ebook, 3=Hardcover, 4=Audiobook
+- Multiple entries per title+volume (different formats) — 5508 unique groups from 7732 entries
+- 4365 entries have ISBNs, 3367 (mostly audiobooks) do not
+- No author data in the source — universal sources can fill this in
+
+Key design decisions:
+- JSON data cached locally with 24-hour TTL (`~/.book-metadata-scraper/cache/lnrelease/data.json`)
+- Entries grouped by (title, volume) so different format editions merge into one book record
+- Session type is HTTP (GitHub Pages, no anti-bot protection)
+- Format-specific ISBN identifiers: `isbn_ebook`, `isbn_paperback`, `isbn_hardcover`, `isbn_audiobook`
+- Canonical `isbn13` identifier (digits only) added when ISBN is exactly 13 digits
+- Earliest release date across formats used as `published_date`
+- No authors (empty list) — universal sources handle this
+
+Verified:
+- Multi-format grouping works (7th Time Loop Vol 1: ebook + paperback ISBNs combined)
+- Single format works (1000 Words Left to Live: hardcover only)
+- Audiobook entries correctly inherit ISBNs from their group
+- 5508 unique title+volume groups produced from 7732 raw entries
