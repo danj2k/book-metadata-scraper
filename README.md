@@ -34,11 +34,17 @@ pip install -e .
 cp scraper.toml.example scraper.toml
 # Edit scraper.toml with your preferred settings
 
-# Run
+# Run with uv
 uv run scraper                          # uses scraper.toml + books.db
 uv run scraper --config custom.toml     # custom config
 uv run scraper --db output.sqlite       # custom database path
 uv run scraper --log-level DEBUG        # verbose logging
+
+# Or run with pip (after pip install -e .)
+book-metadata-scraper                          # uses scraper.toml + books.db
+book-metadata-scraper --config custom.toml     # custom config
+book-metadata-scraper --db output.sqlite       # custom database path
+book-metadata-scraper --log-level DEBUG        # verbose logging
 ```
 
 ## Configuration
