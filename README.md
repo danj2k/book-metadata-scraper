@@ -1,29 +1,29 @@
 # Book Metadata Scraper
 
-A Python CLI tool that scrapes book metadata from multiple sources (publishers, retailers, aggregators) and stores the results in a local SQLite database for further processing.
+Scrapes book metadata from multiple online sources into a local SQLite database.
 
 ## Features
 
-- **Scoped sources** that discover and scrape specific catalogs (e.g. a publisher's full catalogue)
-- **Universal sources** that enrich partial book data using external APIs
-- **Duplicate prevention** — books are identified by ISBN, ASIN, Goodreads ID, or title+author, so the same book is never scraped twice
-- **Incremental enrichment** — previously stored scoped fields are never overwritten by universal sources
-- **Enrichment tracking** — the database records which sources contributed to each book, and the last enrichment date, to avoid redundant re-scraping
-- **Configurable rate limiting** per source to respect target site limits
-- **Plugin architecture** — new sources are added by dropping a Python file into a package directory; no core changes needed
+- Multi-source scraping from publisher catalogues and online retailers
+- Two source types: **scoped** (publisher catalogues) and **universal** (search APIs for enrichment)
+- Identity resolution across sources (ISBN, ASIN, title+author matching)
+- Null-safe merging (enrichment never overwrites existing data)
+- Rate limiting and concurrent fetching via Scrapling
+- Async SQLite storage via aiosqlite
 
 ## Requirements
 
-- Python 3.12 or later
-- uv (recommended) or pip
+- Python 3.10+
+- `uv` (recommended) or `pip`
 
 ## Quick Start
 
 ```bash
-# Clone and enter the repo
-git clone <repo-url> && cd book-metadata-scraper
+# Clone and enter the project
+git clone <repo-url> book-metadata-scraper
+cd book-metadata-scraper
 
-# Install with uv
+# Install with uv (recommended)
 uv sync
 
 # Or install with pip
@@ -39,12 +39,14 @@ uv run scraper                          # uses scraper.toml + books.db
 uv run scraper --config custom.toml     # custom config
 uv run scraper --db output.sqlite       # custom database path
 uv run scraper --log-level DEBUG        # verbose logging
+uv run scraper --list-sources           # show available sources
 
 # Or run with pip (after pip install -e .)
 book-metadata-scraper                          # uses scraper.toml + books.db
 book-metadata-scraper --config custom.toml     # custom config
 book-metadata-scraper --db output.sqlite       # custom database path
 book-metadata-scraper --log-level DEBUG        # verbose logging
+book-metadata-scraper --list-sources           # show available sources
 ```
 
 ## Configuration
@@ -52,13 +54,24 @@ book-metadata-scraper --log-level DEBUG        # verbose logging
 Edit `scraper.toml` (see `scraper.toml.example` for all options):
 
 ```toml
-rate_limits = { "aethon" = 1.0 }   # seconds between requests per source
-request_timeout = 30.0              # HTTP timeout in seconds
-http_max_concurrent = 10            # max simultaneous HTTP requests
-stealthy_max_concurrent = 3         # max simultaneous stealthy requests
-http_request_delay = 0.0            # global delay between HTTP requests
-stealthy_request_delay = 0.0        # global delay between stealthy requests
-user_agent = "BookMetadataScraper/1.0"  # custom User-Agent
+# Database path
+db_path = "book_metadata.db"
+
+# Concurrency and rate limiting
+concurrency_limit = 5        # max simultaneous requests per session type
+min_interval = 0.0           # minimum seconds between requests (0 = no limit)
+
+# Logging
+log_file = "book-metadata-scraper.log"
+log_level = "INFO"
+
+# Enable sources by name (run --list-sources to see all available)
+enabled_scoped_sources = ["aethon_books", "podium"]
+enabled_universal_sources = ["google_books"]
+
+# Per-source configuration
+[source_config.google_books]
+api_key = "your-api-key-here"
 ```
 
 Set `--config NONE` to disable the config file entirely and use defaults.
@@ -67,40 +80,62 @@ Set `--config NONE` to disable the config file entirely and use defaults.
 
 1. **Discovery** — scoped sources crawl their target sites and collect book URLs (skipping books already in the database).
 2. **Parsing** — each discovered book page is fetched and parsed into structured metadata.
-3. **Identity resolution** — the tool checks whether the book already exists in the database (by ISBN, ASIN, title+author, etc.).
-4. **Storage** — new books are inserted; existing books are updated only if the new source provides data in fields the previous source left empty.
-5. **Enrichment** — universal sources can then fill in gaps (e.g. Goodreads rating, Amazon ASINs) without overwriting scoped data.
+3. **Identity Resolution** — books are matched across sources using ISBN, ASIN, or title+author to avoid duplicates.
+4. **Storage** — books are inserted into SQLite. Existing scoped values are never overwritten by universal enrichment.
+5. **Enrichment** — universal sources (Google Books, Amazon UK) look up existing books and fill in missing fields.
+
+## Available Sources
+
+### Scoped Sources (publisher catalogues)
+
+| Source | Description |
+|--------|-------------|
+| `aethon_books` | Aethon Books — genre pages and series catalog |
+| `podium` | Podium Entertainment — titles catalog and sitemap |
+| `lnrelease` | LNRelease — light novel release calendar (cached JSON) |
+| `mountaindale_press` | Mountaindale Press — Shopify catalogue |
+| `shadow_alley` | Shadow Alley Press — library and series pages |
+
+### Universal Sources (enrichment APIs)
+
+| Source | Description |
+|--------|-------------|
+| `google_books` | Google Books API — title/author search and enrichment |
+| `amazon_uk` | Amazon UK — product pages via stealthy fetcher |
+
+Run `book-metadata-scraper --list-sources` to see which sources are available and enabled.
 
 ## Project Structure
 
 ```
-book-metadata-scraper/
-├── scraper.toml.example
-├── pyproject.toml
-└── book_metadata_scraper/
-    ├── cli.py                  # CLI entry point
-    ├── config.py               # Config loading
-    ├── fetcher.py              # HTTP session management & rate limiting
-    ├── matching.py             # Identity resolution & duplicate detection
-    ├── models.py               # BookData & AuthorData dataclasses
-    ├── normalise.py            # Author name deduplication
-    ├── orchestrator.py         # Discovery → enrichment pipeline
-    ├── db/
-    │   ├── schema.py           # SQLite schema & migrations
-    │   └── repository.py       # Async database operations
-    └── sources/
-        ├── base.py             # Base classes for source plugins
-        ├── registry.py         # Source registration decorators
-        ├── scoped/             # Scoped source plugins (one per site)
-        └── universal/          # Universal source plugins (APIs)
+book_metadata_scraper/
+├── cli.py                 # Entry point (--config, --db, --log-level, --list-sources)
+├── config.py              # ScraperConfig dataclass + TOML loader
+├── fetcher.py             # SessionManager (HTTP + stealthy sessions)
+├── matching.py            # Identity resolution across books
+├── models.py              # BookData, AuthorData dataclasses
+├── normalise.py           # Author name normalisation for deduplication
+├── orchestrator.py        # Main pipeline (discovery → parse → store → enrich)
+├── db/
+│   ├── schema.py          # SQLite DDL (8 tables + trigger)
+│   └── repository.py      # Async SQL via aiosqlite
+├── sources/
+│   ├── __init__.py        # Auto-imports all source plugins
+│   ├── base.py            # BaseSource, BaseScopedSource, BaseUniversalSource
+│   ├── registry.py        # Source registration and lookup
+│   ├── scoped/            # Scoped source plugins
+│   └── universal/         # Universal source plugins
 ```
 
 ## Adding a New Source
 
-1. Create a new Python file in `sources/scoped/` or `sources/universal/`.
-2. Define a class inheriting from `BaseScopedSource` or `BaseUniversalSource`.
-3. Decorate with `@scoped_source` or `@universal_source`.
-4. The source is automatically registered on import — no changes to core code needed.
+1. Create a new Python file in `sources/scoped/` or `sources/universal/`
+2. Subclass `BaseScopedSource` or `BaseUniversalSource`
+3. Implement `discover_book_urls()` and `parse_book()` (scoped) or `enrich()` (universal)
+4. Apply the `@scoped_source` or `@universal_source` decorator
+5. Add the source name to `enabled_scoped_sources` or `enabled_universal_sources` in `scraper.toml`
+
+The source will be auto-discovered on next run — no other files need editing.
 
 ## License
 
