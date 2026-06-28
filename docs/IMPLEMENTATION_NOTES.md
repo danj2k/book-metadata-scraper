@@ -67,3 +67,29 @@ The Aethon source normalises URLs by stripping trailing slashes and ensuring the
 The base class `discover_book_urls` is typed as `AsyncIterator[str | tuple[str, float | None]]`. The orchestrator checks `isinstance(item, tuple)` to handle both forms. This is a pragmatic extension rather than a clean interface change — it avoids requiring all sources to yield tuples while supporting sources that have position information.
 
 A cleaner design would be a `BookDiscovery` dataclass, but that would be a breaking change to all existing source plugins for a feature only one source currently uses.
+
+## Amazon UK non-Kindle page redirect
+
+Amazon product pages have different levels of metadata depending on the format:
+- **Kindle pages** have complete metadata: publisher, publication date, page count, ISBNs, language, description
+- **Audiobook pages** have minimal metadata: listening length, narrator, release date, but no publisher/page count
+- **Print pages** have complete metadata similar to Kindle
+
+The `_parse_book_page()` method detects when it's on a non-Kindle page by checking the `#formats` section for a `tmm-grid-swatch-KINDLE` div containing the Kindle ASIN. If found and the current page's ASIN differs, it returns the Kindle ASIN (as a string) instead of a `BookData`.
+
+The `_enrich_from_asin()` method handles this by looping up to `max_redirects` times: it fetches the product page, checks if the result is a Kindle ASIN string, and if so, fetches the Kindle page instead. This ensures we always get the most complete metadata available.
+
+**Edge case:** If a book has no Kindle edition (e.g. print-only), the format section won't have a KINDLE swatch, so `_parse_book_page()` returns the print page's metadata directly. This is correct — the print page has all the metadata we need.
+
+## Amazon UK search result matching
+
+Amazon's search endpoint returns results sorted by relevance, but the most popular edition (often audiobook) may appear first. The `_parse_search_result()` method extracts ASINs and titles from search results, then uses `_find_best_match()` to find the best match by comparing title words.
+
+The matching algorithm:
+1. Tokenize both titles into words (3+ characters, lowercase)
+2. Calculate Jaccard similarity: `|intersection| / |union|`
+3. Return the result with highest similarity score (if >= 0.3)
+
+The threshold of 0.3 is deliberately low to handle cases where the Amazon title differs significantly from our title (e.g. "Project Hail Mary: A Novel" vs "Project Hail Mary").
+
+**Known limitation:** If the search returns multiple editions with similar titles, the algorithm may pick the wrong one. The subsequent redirect to Kindle page mitigates this for most cases.

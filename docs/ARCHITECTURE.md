@@ -63,7 +63,8 @@ Top-level controller. Runs scoped sources first (discovery + parsing), then univ
 - `podium.py` — Podium Entertainment. Discovery via `sitemap.xml` (~13,500 URLs in one request). Parsing via CSS selectors and text extraction (no JSON-LD on this site). Extracts `podium_id` from URL path for deduplication.
 
 **Universal sources** (`sources/universal/`):
-Currently only `google_books.py` — Google Books API.
+- `google_books.py` — Google Books API. Enriches with description, publisher, dates, page count, language, cover image, genres, and identifiers.
+- `amazon_uk.py` — Amazon UK. Uses stealthy fetcher to bypass WAF. Enriches with ASIN, ISBNs, publisher, publication date, page count, language, description, and cover image. Handles non-Kindle pages by redirecting to Kindle edition for complete metadata.
 
 ### Models (`models.py`)
 Plain dataclasses: `AuthorData(name, role)` and `BookData(title, authors, ...)`. Not ORM models — just the lingua franca between plugins and the database layer.

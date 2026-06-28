@@ -79,3 +79,37 @@ Implemented `podium.py`:
 - Description: extracted from HTML `<p>` tags between metadata and "This book is part of" section
 
 Verified: parsing works for series books (Columbus Day), standalone books (Enigma), and books without series position. Discovery yields 13,560 unique URLs.
+
+## 2026-06-28: Amazon UK universal source
+
+Explored the Amazon UK website structure:
+- `/s?k={query}&i=stripbooks` — search endpoint returns results with `data-asin` attributes
+- `/dp/{ASIN}` — product pages with different layouts for Kindle vs audiobook vs print
+- Kindle pages have complete metadata (publisher, date, pages, ISBNs, description)
+- Audiobook pages use table layout (`<tr>/<th>/<td>`) instead of list layout (`<li>`)
+- Format section (`#formats`) contains links to all editions with ASINs
+- `tmm-grid-swatch-KINDLE` div contains the Kindle ASIN for the book
+
+Key discoveries:
+1. Amazon's search returns the most popular edition (often audiobook), not necessarily the one we want
+2. Non-Kindle pages can be redirected to Kindle pages by extracting the Kindle ASIN from format links
+3. The stealthy fetcher works reliably for Amazon UK (no CAPTCHA issues observed)
+4. Product details section has two formats: list (`<li>`) for print/Kindle, table (`<tr>/<th>/<td>`) for audiobooks
+5. The "Product details" heading may have whitespace before `</h2>` — match with just the text
+
+Implemented `amazon_uk.py`:
+- Uses stealthy fetcher for all requests (Amazon's WAF blocks plain HTTP)
+- Search strategy: ASIN > ISBN > title+author
+- `_parse_book_page()` detects non-Kindle pages and returns the Kindle ASIN for redirect
+- `_enrich_from_asin()` follows up to 2 redirects to reach the Kindle page
+- `_parse_product_details()` handles both list and table formats
+- `_parse_search_result()` extracts ASINs from search results and matches by title similarity
+- `_find_best_match()` uses Jaccard similarity on title words (threshold: 0.3)
+- Enriches: ASIN, ISBNs, publisher, publication date, page count, language, description, cover image
+- Title and authors set to sentinels (universal sources don't update these)
+
+Verified end-to-end:
+- ISBN search (`9780593135204`) → search → audiobook page → redirect to Kindle page → full metadata
+- Audiobook ASIN (`B08G9SKSHR`) → redirect to Kindle page → full metadata
+- Kindle ASIN (`B08FFJS3YW`) → direct page → full metadata
+- All tests return correct data: publisher (Cornerstone Digital), date (4 May 2021), pages (481), language (en)
