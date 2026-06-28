@@ -45,7 +45,10 @@ class Orchestrator:
             "errors": 0,
         }
 
-        async with SessionManager(self.config.concurrency_limit) as session:
+        async with SessionManager(
+            self.config.concurrency_limit,
+            http_rate_limit=self.config.http_rate_limit,
+        ) as session:
             # Phase 1: scoped sources (discovery + parsing)
             for source_name in self.config.enabled_scoped_sources:
                 await self._run_scoped_source(source_name, session)

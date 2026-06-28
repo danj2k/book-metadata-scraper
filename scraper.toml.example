@@ -1,5 +1,8 @@
 db_path = "book_metadata.db"
 concurrency_limit = 5
+# Minimum seconds between HTTP requests (None = no limit).  Set to 1.0 for
+# publisher sites that require polite crawling.
+# http_rate_limit = 1.0
 log_file = "book-metadata-scraper.log"
 log_level = "INFO"
 
@@ -7,12 +10,9 @@ enabled_scoped_sources = []
 enabled_universal_sources = []
 
 # Example: enable specific sources
-# enabled_scoped_sources = ["example_publisher"]
+# enabled_scoped_sources = ["aethon_books"]
 # enabled_universal_sources = ["google_books"]
 
 # Per-source configuration blocks
 # [source_config.google_books]
 # api_key = "YOUR_KEY_HERE"
-
-# [source_config.example_publisher]
-# base_url = "https://www.examplepublisher.com/new-releases"

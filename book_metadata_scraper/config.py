@@ -12,6 +12,7 @@ class ScraperConfig:
 
     db_path: str = "book_metadata.db"
     concurrency_limit: int = 5
+    http_rate_limit: float | None = None  # Minimum seconds between HTTP fetches (None = no limit)
     log_file: str = "book-metadata-scraper.log"
     log_level: str = "INFO"  # DEBUG | INFO | WARNING | ERROR
     enabled_scoped_sources: list[str] = field(default_factory=list)
@@ -39,7 +40,7 @@ def load_config(path: str | None = None) -> ScraperConfig:
     kwargs: dict = {}
 
     # Simple scalar fields
-    for key in ("db_path", "concurrency_limit", "log_file", "log_level"):
+    for key in ("db_path", "concurrency_limit", "http_rate_limit", "log_file", "log_level"):
         if key in raw:
             kwargs[key] = raw[key]
 
