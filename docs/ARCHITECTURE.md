@@ -59,7 +59,8 @@ Top-level controller. Runs scoped sources first (discovery + parsing), then univ
 `@scoped_source` and `@universal_source` decorators register classes into module-level dicts. The `sources/__init__.py` auto-imports all modules under `sources/scoped/` and `sources/universal/` using `pkgutil.iter_modules`, so adding a new plugin file is the only step needed.
 
 **Scoped sources** (`sources/scoped/`):
-Currently only `aethon.py` — Aethon Books.
+- `aethon.py` — Aethon Books. Discovery via `/series/` index → JSON-LD `hasPart`. Parsing via JSON-LD `Book` blocks.
+- `podium.py` — Podium Entertainment. Discovery via `sitemap.xml` (~13,500 URLs in one request). Parsing via CSS selectors and text extraction (no JSON-LD on this site). Extracts `podium_id` from URL path for deduplication.
 
 **Universal sources** (`sources/universal/`):
 Currently only `google_books.py` — Google Books API.

@@ -60,3 +60,22 @@ Added:
 ## 2026-06-28: AGENTS.md and design document
 
 Added `AGENTS.md` (project documentation standards) and loaded the original design document into `docs/book-metadata-scraper-design.md` for version control.
+
+## 2026-06-28: Podium Entertainment scoped source
+
+Explored the Podium website structure:
+- `/titles` page has a JavaScript-driven "Load More" button (inaccessible to plain HTTP)
+- `/sitemap.xml` contains all ~13,500 individual title URLs in one request — ideal for discovery
+- Book pages are server-rendered HTML (Next.js App Router) with no JSON-LD or Open Graph metadata
+- URL pattern: `/titles/{numeric_id}/{slug}` — the numeric ID is a stable unique identifier
+
+Key discovery: Scrapling's `FetcherSession` returns `html_content` (parsed HTML) and `css()` selectors, but `text` is empty. Must use CSS selectors and `get_all_text()` for content extraction.
+
+Implemented `podium.py`:
+- Discovery: single fetch of `sitemap.xml`, regex-extract all `/titles/{id}/{slug}` URLs
+- Parsing: CSS selectors for title (h1), series, author, genre; `get_all_text()` for metadata; regex on raw HTML for description
+- Identifiers: `podium_id` from URL path, ISBN-13 from Bookshop/B&N/Audiobooks.com links, ASINs from Amazon/Audible links
+- Cover image: decoded from `_next/image?url=` wrapper to direct `assets.podiumentertainment.com` URL
+- Description: extracted from HTML `<p>` tags between metadata and "This book is part of" section
+
+Verified: parsing works for series books (Columbus Day), standalone books (Enigma), and books without series position. Discovery yields 13,560 unique URLs.
