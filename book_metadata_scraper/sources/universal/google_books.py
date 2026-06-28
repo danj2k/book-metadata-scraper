@@ -79,7 +79,11 @@ class GoogleBooksSource(BaseUniversalSource):
 
         # Manually build to avoid double-encoding the query value
         encoded_q = urllib.parse.quote(q, safe="")
-        return f"q={encoded_q}&maxResults=1&projection=full"
+        params = f"q={encoded_q}&maxResults=1&projection=full"
+        api_key = self.config.get("api_key")
+        if api_key:
+            params += f"&key={api_key}"
+        return params
 
     # ------------------------------------------------------------------
     # Volume → BookData conversion
@@ -171,6 +175,9 @@ class GoogleBooksSource(BaseUniversalSource):
         # If we already have a Google Books ID, fetch directly
         if volume_id:
             url = f"{BASE_URL}/{urllib.parse.quote(volume_id)}"
+            api_key = self.config.get("api_key")
+            if api_key:
+                url += f"?key={api_key}"
             try:
                 response = await self.session.fetch_http(
                     url, google_search=False
