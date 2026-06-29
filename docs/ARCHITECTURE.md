@@ -45,6 +45,8 @@ Entry point. Parses `--config`, `--db`, `--log-level` arguments. Loads TOML conf
 ### Fetcher (`fetcher.py`)
 `SessionManager` owns two Scrapling sessions: `FetcherSession` for plain HTTP (APIs, simple sites) and `AsyncStealthySession` for sites with anti-bot protection. A shared `asyncio.Semaphore` caps total concurrency. An optional `http_rate_limit` enforces a minimum interval between HTTP requests using a monotonic clock and an asyncio lock.  Individual sources can declare a per-source `rate_limit` (class attribute on `BaseSource`) and call `self.fetch()` instead of `self.session.fetch_http()` — the convenience method passes the rate limit through as `min_interval`, overriding the global for that source.
 
+**Stealthy session recycling:** The stealthy session (Chromium) is periodically destroyed and recreated to reclaim accumulated browser memory.  After `stealthy_page_limit` stealthy fetches (default: 20), the entire `AsyncStealthySession` is torn down — killing the Chromium process — and a fresh one is started.  This adds ~2-3s overhead per restart but keeps the Chromium heap bounded on low-memory VPS instances.  The stealthy session is started lazily on first use, so HTTP-only runs never launch Chromium at all.  Chromium launch flags include memory-efficient defaults (`--disable-dev-shm-usage`, `--disable-extensions`, `--disable-background-networking`, etc.).
+
 ### Orchestrator (`orchestrator.py`)
 Top-level controller. Runs scoped sources first (discovery + parsing), then universal sources (enrichment). Handles the `(url, position)` tuple form from discovery. Tracks run statistics (discovered, inserted, updated, skipped, errors). Each source is wrapped in a try/except so one failing source doesn't abort the run.
 

@@ -12,6 +12,30 @@ The schema DDL is stored as a single multi-line string and split on semicolons. 
 
 The `FetcherSession` is accessed via `.get()` while `AsyncStealthySession` uses `.fetch()` — these are different Scrapling APIs for different session types. Source plugins don't need to know this; they call `session.fetch_http()` or `session.fetch_stealthy()` and the manager routes correctly.
 
+## Stealthy session recycling (OOM prevention)
+
+The stealthy session (patchright/Chromium) accumulates memory over time — V8 heap, DOM caches, internal Chromium state — even after individual pages are closed.  On a low-memory VPS (4GB RAM), this leads to OOM crashes after a few hundred stealthy page loads.
+
+The fix is to destroy and recreate the entire `AsyncStealthySession` periodically, killing the Chromium process and starting a fresh one.  This is controlled by `stealthy_page_limit` (default: 20 fetches).  The restart takes ~2-3s but reclaims all accumulated Chromium memory.
+
+**Why full session restart, not just context recycling:** Scrapling's `AsyncStealthySession` uses `launch_persistent_context`, which creates a single Chromium process.  Even destroying the context doesn't release the process's internal heap.  Only stopping the entire session (calling `playwright.stop()`) fully kills the process and its memory.
+
+**Lazy startup:** The stealthy session is created on first `fetch_stealthy()` call, not at `SessionManager.start()`.  This means HTTP-only runs (scoped sources that don't need stealth) never launch Chromium at all, saving ~200-300MB.
+
+**Chromium memory flags:** The session is created with `extra_flags` that reduce baseline Chromium memory:
+- `--disable-dev-shm-usage` — use `/tmp` instead of `/dev/shm` (avoids shared memory issues on small VPS)
+- `--disable-extensions` — no browser extensions loaded
+- `--disable-background-networking` — no background network requests
+- `--disable-default-apps` — don't load default apps
+- `--no-first-run` — skip first-run wizard
+- `--disable-translate` — no translate popups
+
+These are safe defaults that don't affect anti-bot detection — they strip out features a headless scraper never uses.
+
+**Concurrency during restart:** The `_stealthy_lock` serialises the restart operation.  While a restart is in progress (2-3s), other stealthy fetchers block on the lock.  This is acceptable because: (a) restarts are infrequent (every 20 fetches), (b) the alternative (OOM crash) is far worse, and (c) HTTP sources are unaffected since they use a separate session.
+
+**Tuning:** On a VPS with more RAM, increase `stealthy_page_limit` (e.g. 50 or 100) to reduce restart overhead.  On very constrained systems, decrease it (e.g. 10).  The README documents this as a configuration option.
+
 ## HTTP rate limiting implementation
 
 The rate limiter uses `time.monotonic()` (immune to system clock changes) and an asyncio lock to serialise the check-and-sleep. The lock ensures that two concurrent coroutines don't both read the same timestamp and both decide to sleep. The rate limit applies only to HTTP requests (not stealthy browser requests), since the stealthy session is typically used for sites that need JavaScript rendering where rate limiting is less critical.

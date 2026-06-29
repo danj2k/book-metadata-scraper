@@ -158,3 +158,15 @@ Updated all source plugins to use `self.fetch()` instead of calling `self.sessio
 - `amazon_uk.py` — 2 calls migrated (passes `timeout=30000` through kwargs)
 
 All sources now route through `BaseSource.fetch()`, which handles session type selection, per-source rate limit injection, and any future fetch-level concerns uniformly.
+
+## 2026-07-04: Stealthy session recycling + Chromium memory flags
+
+Rewrote `fetcher.py` to prevent OOM crashes on low-memory VPS instances:
+
+- **Session recycling:** The `AsyncStealthySession` is destroyed and recreated after `stealthy_page_limit` stealthy fetches (default: 20).  This kills the Chromium process entirely, reclaiming accumulated V8 heap, DOM caches, and internal state.  The restart takes ~2-3s but keeps memory bounded.
+- **Lazy startup:** The stealthy session is started on first `fetch_stealthy()` call, not at `SessionManager.start()`.  HTTP-only runs never launch Chromium, saving ~200-300MB.
+- **Memory-efficient Chromium flags:** Added `extra_flags` with `--disable-dev-shm-usage`, `--disable-extensions`, `--disable-background-networking`, `--disable-default-apps`, `--no-first-run`, `--disable-translate`.  These reduce baseline Chromium memory without affecting anti-bot detection.
+- **Concurrency safety:** `_stealthy_lock` serialises the restart operation.  While a restart is in progress, other stealthy fetchers block on the lock.  HTTP sources are unaffected.
+- **Removed `NODE_OPTIONS=--max-old-space-size` recommendation** from README — the session recycling is the primary fix; throwing more memory at the problem was never sustainable on a low-memory VPS.
+
+Motivation: The scraper crashed overnight with a Node.js heap OOM (`Ineffective mark-compacts near heap limit`).  The stealthy session (patchright/Chromium) accumulates memory over time even after individual pages are closed.  On a 4GB VPS, the default 2GB Node.js heap is exhausted after a few hundred stealthy page loads.
