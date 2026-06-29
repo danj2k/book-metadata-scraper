@@ -170,3 +170,9 @@ Rewrote `fetcher.py` to prevent OOM crashes on low-memory VPS instances:
 - **Removed `NODE_OPTIONS=--max-old-space-size` recommendation** from README — the session recycling is the primary fix; throwing more memory at the problem was never sustainable on a low-memory VPS.
 
 Motivation: The scraper crashed overnight with a Node.js heap OOM (`Ineffective mark-compacts near heap limit`).  The stealthy session (patchright/Chromium) accumulates memory over time even after individual pages are closed.  On a 4GB VPS, the default 2GB Node.js heap is exhausted after a few hundred stealthy page loads.
+
+## 2026-06-29 — Memory logging and config wiring
+
+- **Memory logging in restart:** Each stealthy session restart now logs RSS (Resident Set Size) before and after, measured via `/proc/self/status` with `resource.getrusage` fallback.  This gives operators hard numbers for tuning `stealthy_page_limit` — they can see exactly how much memory each restart reclaims.
+- **`stealthy_page_limit` now configurable:** Added `stealthy_page_limit` to `ScraperConfig` and `load_config()` so it can be set in `scraper.toml`.  Previously it was hardcoded as the `SessionManager` default (20) but never wired through from config.  The orchestrator now passes it through.
+- **Database corruption risk on OOM:** Confirmed that the database is safe.  Each book write is its own committed transaction.  The OOM is in Node.js (patchright's Chromium), not Python — when the Chromium process dies, `fetch_stealthy` raises an exception caught by the orchestrator, and the next book proceeds.  Uncommitted transactions are rolled back by SQLite.  No data corruption or partial writes.

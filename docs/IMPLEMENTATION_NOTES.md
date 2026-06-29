@@ -34,7 +34,14 @@ These are safe defaults that don't affect anti-bot detection — they strip out 
 
 **Concurrency during restart:** The `_stealthy_lock` serialises the restart operation.  While a restart is in progress (2-3s), other stealthy fetchers block on the lock.  This is acceptable because: (a) restarts are infrequent (every 20 fetches), (b) the alternative (OOM crash) is far worse, and (c) HTTP sources are unaffected since they use a separate session.
 
-**Tuning:** On a VPS with more RAM, increase `stealthy_page_limit` (e.g. 50 or 100) to reduce restart overhead.  On very constrained systems, decrease it (e.g. 10).  The README documents this as a configuration option.
+**Tuning:** On a VPS with more RAM, increase `stealthy_page_limit` (e.g. 50 or 100) to reduce restart overhead.  On very constrained systems, decrease it (e.g. 10).  The README documents this as a configuration option.  The config field `stealthy_page_limit` in `scraper.toml` is now wired through from `ScraperConfig` (previously hardcoded as the `SessionManager` default).
+
+**Memory logging:** Each restart logs RSS (Resident Set Size) before and after the Chromium kill, measured via `/proc/self/status` with a `resource.getrusage` fallback.  The log reads:
+```
+Restarting stealthy session (page 20/20) RSS=384MB
+Stealthy session restarted RSS=142MB (freed ~242MB)
+```
+This gives the operator hard numbers for tuning `stealthy_page_limit`.  If the "freed" figure is small relative to total RSS, the limit is already aggressive enough.  If RSS creeps back to dangerous levels between restarts, lower the limit.
 
 ## HTTP rate limiting implementation
 
