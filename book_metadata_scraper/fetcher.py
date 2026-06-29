@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import resource
 import time
 
 from scrapling.fetchers import FetcherSession, AsyncStealthySession
@@ -21,6 +22,25 @@ _MEMORY_EFFICIENT_FLAGS = [
     "--no-first-run",                # Skip first-run wizard
     "--disable-translate",           # No translate popups
 ]
+
+
+def _get_rss_mb() -> float:
+    """Return current process RSS in MB from /proc/self/status.
+
+    Falls back to ``resource.getrusage`` if /proc is unavailable.
+    RSS is the portion of memory held in RAM — the metric that matters
+    for OOM decisions on a VPS.
+    """
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    # "VmRSS:   123456 kB"
+                    return int(line.split()[1]) / 1024.0
+    except (OSError, IndexError, ValueError):
+        pass
+    # Fallback: ru_maxrss is peak RSS in kilobytes on Linux
+    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
 
 
 class SessionManager:
@@ -101,10 +121,12 @@ class SessionManager:
         than letting the Chromium heap grow unbounded, we pay a one-time cost
         of ~2-3s to restart with a clean process.
         """
+        rss_before = _get_rss_mb()
         logger.info(
-            "Restarting stealthy session (page %d/%d) to reclaim memory",
+            "Restarting stealthy session (page %d/%d) RSS=%.0fMB",
             self._stealthy_page_count,
             self._stealthy_page_limit,
+            rss_before,
         )
         # Tear down the existing session — this kills the Chromium process.
         try:
@@ -122,7 +144,12 @@ class SessionManager:
         )
         self._stealthy = await self._stealthy_ctx.__aenter__()
         self._stealthy_page_count = 0
-        logger.info("Stealthy session restarted")
+        rss_after = _get_rss_mb()
+        logger.info(
+            "Stealthy session restarted RSS=%.0fMB (freed ~%.0fMB)",
+            rss_after,
+            max(rss_before - rss_after, 0),
+        )
 
     async def stop(self) -> None:
         """Close all sessions.  Call once after all fetch operations complete."""

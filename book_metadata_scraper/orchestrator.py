@@ -48,6 +48,7 @@ class Orchestrator:
         async with SessionManager(
             self.config.concurrency_limit,
             http_rate_limit=self.config.http_rate_limit,
+            stealthy_page_limit=self.config.stealthy_page_limit,
         ) as session:
             # Phase 1: scoped sources (discovery + parsing)
             for source_name in self.config.enabled_scoped_sources:
