@@ -61,6 +61,9 @@ class Orchestrator:
 
         self._log_summary()
 
+        if self._stats["inserted"] + self._stats["updated"] > 0:
+            await self.repo.rebuild_fts_index()
+
     # ------------------------------------------------------------------
     # Scoped source processing
     # ------------------------------------------------------------------

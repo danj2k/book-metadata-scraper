@@ -103,3 +103,15 @@
 - No fallback at all — too many books would be duplicated because scoped sources often don't provide ISBNs.
 
 **Consequences:** Exact title matching is conservative but safe. The normalised author name (lowercase, dots/spaces collapsed to hyphens) handles common variations ("J.R.R. Tolkien" vs "J R R Tolkien"). The system will miss books where the title differs slightly between sources (e.g. subtitle included in one but not the other), but this is preferable to false positive merges. A future improvement could add fuzzy matching with a confidence threshold.
+
+## 11. FTS5 full-text search with external content and end-of-run rebuild
+
+**Decision:** Add an FTS5 virtual table (`books_fts`) as an external-content index (`content='books'`) over title, subtitle, and description. Rebuild the index once at the end of each scraper run that produces changes, rather than using triggers for per-row sync.
+
+**Alternatives considered:**
+- FTS5 with synchronous triggers (`AFTER INSERT ON books`) — keeps the index live on every row, but adds write overhead for every insert and update during the run. For a batch of thousands of books this is wasteful.
+- SQLite `LIKE '%term%'` queries without FTS — simpler but significantly slower on larger datasets and cannot rank results by relevance.
+- External embedding database (e.g. ChromaDB) — enables semantic similarity search but adds a dependency, a separate database file, and complexity for a dataset where keyword/phrase search covers most use cases.
+- Contentless FTS5 (`content=''`) with manual population — lighter on storage but requires explicit `INSERT INTO fts_table(fts_table, rowid, ...)` for every book, doubling the write path.
+
+**Consequences:** The external-content approach means FTS5 stores only the search index, not the text itself — no data duplication. The end-of-run rebuild is a single `INSERT INTO books_fts(books_fts) VALUES('rebuild')` command that reads all rows in one pass (under a second for 15K books). The scraper code never touches the FTS table directly; it is invisible to the existing write path. If the scraper crashes mid-run, the FTS index remains valid from the last successful rebuild — no corruption risk. The trade-off is that during a run, new books are not searchable until the rebuild completes, which is acceptable because the index is only useful for queries after the run finishes.

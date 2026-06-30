@@ -9,7 +9,7 @@ from typing import Optional
 
 import aiosqlite
 
-from book_metadata_scraper.db.schema import create_tables
+from book_metadata_scraper.db.schema import create_tables, rebuild_fts_index
 from book_metadata_scraper.models import BookData, AuthorData
 from book_metadata_scraper.normalise import normalise_author_name
 
@@ -45,6 +45,10 @@ class Repository:
         if self._conn:
             await self._conn.close()
             self._conn = None
+
+    async def rebuild_fts_index(self) -> None:
+        """Rebuild the FTS5 full-text search index from the books table."""
+        await rebuild_fts_index(self._conn)
 
     # ------------------------------------------------------------------
     # Source management

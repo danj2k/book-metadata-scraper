@@ -78,6 +78,14 @@ CREATE TABLE IF NOT EXISTS book_enrichment_log (
     enriched_at TEXT   NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     PRIMARY KEY (book_id, source_name)
 );
+
+CREATE VIRTUAL TABLE IF NOT EXISTS books_fts USING fts5(
+    title,
+    subtitle,
+    description,
+    content='books',
+    content_rowid='id'
+);
 """
 
 _TRIGGERS = [
@@ -114,3 +122,18 @@ async def create_tables(conn) -> None:
 
     await conn.commit()
     logger.info("Database tables created / verified")
+
+
+async def rebuild_fts_index(conn) -> None:
+    """Rebuild the FTS5 index from the books table.
+
+    Call this once at the end of a scrape run, after all inserts and
+    updates are committed.  The rebuild reads every row from the books
+    table and repopulates books_fts in a single pass — typically
+    completes in well under a second for datasets of this size.
+    """
+    await conn.execute(
+        "INSERT INTO books_fts(books_fts) VALUES('rebuild')"
+    )
+    await conn.commit()
+    logger.info("FTS5 index rebuilt")

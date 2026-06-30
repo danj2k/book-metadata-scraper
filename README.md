@@ -8,6 +8,7 @@ Scrapes book metadata from multiple online sources into a local SQLite database.
 - Two source types: **scoped** (publisher catalogues) and **universal** (search APIs for enrichment)
 - Identity resolution across sources (ISBN, ASIN, title+author matching)
 - Null-safe merging (enrichment never overwrites existing data)
+- FTS5 full-text search index across titles and descriptions (auto-rebuilt after each run)
 - Rate limiting and concurrent fetching via Scrapling
 - Async SQLite storage via aiosqlite
 
@@ -83,6 +84,7 @@ Set `--config NONE` to disable the config file entirely and use defaults.
 3. **Identity Resolution** — books are matched across sources using ISBN, ASIN, or title+author to avoid duplicates.
 4. **Storage** — books are inserted into SQLite. Existing scoped values are never overwritten by universal enrichment.
 5. **Enrichment** — universal sources (Google Books, Amazon UK) look up existing books and fill in missing fields.
+6. **FTS5 Rebuild** — the full-text search index is rebuilt from updated titles, subtitles, and descriptions.
 
 ## Available Sources
 
@@ -117,7 +119,7 @@ book_metadata_scraper/
 ├── normalise.py           # Author name normalisation for deduplication
 ├── orchestrator.py        # Main pipeline (discovery → parse → store → enrich)
 ├── db/
-│   ├── schema.py          # SQLite DDL (8 tables + trigger)
+│   ├── schema.py          # SQLite DDL (8 tables + trigger + FTS5 index)
 │   └── repository.py      # Async SQL via aiosqlite
 ├── sources/
 │   ├── __init__.py        # Auto-imports all source plugins

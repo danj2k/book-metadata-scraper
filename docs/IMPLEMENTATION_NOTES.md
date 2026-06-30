@@ -128,3 +128,15 @@ The matching algorithm:
 The threshold of 0.3 is deliberately low to handle cases where the Amazon title differs significantly from our title (e.g. "Project Hail Mary: A Novel" vs "Project Hail Mary").
 
 **Known limitation:** If the search returns multiple editions with similar titles, the algorithm may pick the wrong one. The subsequent redirect to Kindle page mitigates this for most cases.
+
+## FTS5 external-content index
+
+The `books_fts` virtual table uses FTS5's `content='books'` mode, which means the indexed text lives in the `books` table and FTS5 only stores the inverted index. This avoids duplicating title/subtitle/description text across two tables.
+
+The `content_rowid='id'` parameter tells FTS5 to use the `books.id` column as the row identifier. This is required because `books` uses an autoincrement integer primary key, not the default rowid.
+
+**Rebuild semantics:** The `INSERT INTO books_fts(books_fts) VALUES('rebuild')` command reads every row from the content table (`books`) and reconstructs the entire index. This is idempotent and safe to call at any time. The rebuild is triggered once at the end of each orchestrator run, only when inserts or updates occurred.
+
+**Query syntax:** FTS5 supports `MATCH` for keyword search, quoted phrases for exact match, boolean operators (`AND`, `OR`, `NOT`), and column filters (`{title}: term`). Combined with standard SQL `WHERE` clauses, this enables queries like "search for 'dungeon core' in descriptions, filtered to LitRPG genre books published in 2025".
+
+**Limitations:** The index only covers `title`, `subtitle`, and `description`. Series names, genres, publishers, and other structured fields are better queried with standard SQL `WHERE` clauses. FTS5 tokenisation is whitespace-based, so terms like "LitRPG" and "VRMMO" are treated as single tokens — this works well for the project's domain vocabulary.

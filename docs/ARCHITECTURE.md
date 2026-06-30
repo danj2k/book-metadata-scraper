@@ -82,10 +82,10 @@ Author name normalisation for deduplication. Lowercase, replace runs of dots/spa
 ### Database Layer (`db/`)
 
 **Schema** (`db/schema.py`):
-8 tables + 1 trigger. Created on first run with `CREATE TABLE IF NOT EXISTS`. PRAGMAs: WAL journal mode, foreign keys on.
+8 tables + 1 trigger + 1 FTS5 virtual table. Created on first run with `CREATE TABLE IF NOT EXISTS`. PRAGMAs: WAL journal mode, foreign keys on. The `books_fts` virtual table is an external-content FTS5 index (`content='books'`) that indexes title, subtitle, and description. It is rebuilt after each scraper run that inserts or updates data.
 
 **Repository** (`db/repository.py`):
-Single `Repository` class with all async methods. All SQL lives here — no SQL anywhere else in the codebase. Key operations: book lookups (by identifier, title+author, source URL), book insert (with author/genre/identifier upserts in a transaction), null-safe update (COALESCE), enrichment tracking.
+Single `Repository` class with all async methods. All SQL lives here — no SQL anywhere else in the codebase. Key operations: book lookups (by identifier, title+author, source URL), book insert (with author/genre/identifier upserts in a transaction), null-safe update (COALESCE), enrichment tracking, FTS5 index rebuild.
 
 ## Data Flow
 
@@ -105,6 +105,11 @@ Universal source enrichment
     → enrich() → enriched BookData
     → update_book_nulls() — only fills NULL fields
     → mark_enriched() in book_enrichment_log
+
+Index maintenance
+    → if any inserts or updates occurred:
+    → repo.rebuild_fts_index() → INSERT INTO books_fts(books_fts) VALUES('rebuild')
+    → FTS5 index rebuilt from titles, subtitles, and descriptions
 ```
 
 ## Dependencies

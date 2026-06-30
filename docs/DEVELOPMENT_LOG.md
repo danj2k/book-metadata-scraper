@@ -190,3 +190,12 @@ Improved rate limiting for Google Books API to prevent 429 errors and respect da
 This addresses the user's issue with Google Books 429 errors and ensures the scraper doesn't exceed Google's daily quota. The remaining books are simply skipped and will be enriched on the next run, preventing data loss.
 
 Also updated Mountaindale Press rate limit from 1 request/second to 1 request every 3 seconds to reduce 429 errors from Shopify's aggressive rate limiting.
+
+## 2026-07-04: FTS5 full-text search index
+
+Added FTS5 full-text search capability to the book metadata database:
+
+- **Virtual table:** `books_fts` created via `CREATE VIRTUAL TABLE IF NOT EXISTS books_fts USING fts5(title, subtitle, description, content='books', content_rowid='id')`. Uses external-content mode so the text stays in `books` and FTS5 only stores the search index.
+- **Repository method:** `rebuild_fts_index()` on `Repository` delegates to `rebuild_fts_index()` in `schema.py`.
+- **End-of-run rebuild:** The orchestrator calls `repo.rebuild_fts_index()` after `_log_summary()`, gated on whether any inserts or updates occurred. This rebuilds the entire index in a single pass (under a second for 15K books) rather than syncing per-row via triggers.
+- **Design rationale:** Triggers would add write overhead for every row during a batch run. A single rebuild at the end is simpler, faster, and crash-safe (if the run crashes, the index from the last successful run remains valid).
