@@ -12,6 +12,7 @@ from book_metadata_scraper.db.repository import Repository
 from book_metadata_scraper.fetcher import SessionManager
 from book_metadata_scraper.matching import find_existing_book
 from book_metadata_scraper.models import BookData
+from book_metadata_scraper.sources.base import RateLimitExhausted
 from book_metadata_scraper.sources.registry import (
     get_scoped_source,
     get_universal_source,
@@ -168,51 +169,60 @@ class Orchestrator:
             for book_id, book_data, existing_identifiers in books:
                 try:
                     enriched = await source.enrich(book_data, existing_identifiers)
+                except RateLimitExhausted as e:
+                    logger.warning(
+                        "Rate limit reached for %s — stopping enrichment: %s. "
+                        "Remaining books will be picked up on the next run.",
+                        source_name,
+                        e,
+                    )
+                    break  # stop processing this source
+                except Exception:
+                    logger.exception(
+                        "Error enriching book id=%d with %s", book_id, source_name
+                    )
+                    self._stats["errors"] += 1
+                    continue
 
-                    if enriched is not book_data:
-                        # Only update if enrich() returned something different
-                        # (i.e. it found data)
-                        has_new_data = any([
-                            enriched.description,
-                            enriched.publisher,
-                            enriched.published_date,
-                            enriched.page_count,
-                            enriched.language,
-                            enriched.series,
-                            enriched.series_position,
-                            enriched.cover_image_url,
-                            enriched.identifiers,
-                            enriched.genres,
-                        ])
-                        if has_new_data:
-                            await self.repo.update_book_nulls(book_id, enriched)
-                            await self.repo.mark_enriched(book_id, source_name)
-                            logger.debug(
-                                "Enriched book '%s' (id=%d) with %s",
-                                book_data.title,
-                                book_id,
-                                source_name,
-                            )
-                        else:
-                            await self.repo.mark_enriched(book_id, source_name)
-                            logger.debug(
-                                "Enrichment found nothing for book '%s' (id=%d)",
-                                book_data.title,
-                                book_id,
-                            )
+                if enriched is not book_data:
+                    # Only update if enrich() returned something different
+                    # (i.e. it found data)
+                    has_new_data = any([
+                        enriched.description,
+                        enriched.publisher,
+                        enriched.published_date,
+                        enriched.page_count,
+                        enriched.language,
+                        enriched.series,
+                        enriched.series_position,
+                        enriched.cover_image_url,
+                        enriched.identifiers,
+                        enriched.genres,
+                    ])
+                    if has_new_data:
+                        await self.repo.update_book_nulls(book_id, enriched)
+                        await self.repo.mark_enriched(book_id, source_name)
+                        logger.debug(
+                            "Enriched book '%s' (id=%d) with %s",
+                            book_data.title,
+                            book_id,
+                            source_name,
+                        )
                     else:
-                        # enrich() returned book unchanged — book not found
                         await self.repo.mark_enriched(book_id, source_name)
                         logger.debug(
                             "Enrichment found nothing for book '%s' (id=%d)",
                             book_data.title,
                             book_id,
                         )
-                except Exception:
-                    logger.exception(
-                        "Error enriching book id=%d with %s", book_id, source_name
+                else:
+                    # enrich() returned book unchanged — book not found
+                    await self.repo.mark_enriched(book_id, source_name)
+                    logger.debug(
+                        "Enrichment found nothing for book '%s' (id=%d)",
+                        book_data.title,
+                        book_id,
                     )
-                    self._stats["errors"] += 1
 
         except Exception:
             logger.exception("Universal source '%s' raised unhandled exception", source_name)

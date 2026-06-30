@@ -26,9 +26,10 @@ Google Books API has strict rate limits:
 - 1 request per 1.5 seconds (enforced via ``rate_limit`` class attribute)
 - 1,000 requests per 24-hour period (tracked via ``_daily_call_count``)
 
-When a 429 is received or the daily limit is exceeded, enrichment stops
-gracefully and returns whatever data was gathered so far.  The remaining
-books will be picked up on the next run.
+When a 429 is received or the daily limit is exceeded, a
+``RateLimitExhausted`` exception is raised.  The orchestrator catches
+this and stops enrichment for this source, preserving whatever data
+was gathered so far.  The remaining books are picked up on the next run.
 """
 
 import html
@@ -38,8 +39,11 @@ import time
 import urllib.parse
 
 from book_metadata_scraper.fetcher import SESSION_HTTP
-from book_metadata_scraper.models import AuthorData, BookData
-from book_metadata_scraper.sources.base import BaseUniversalSource
+from book_metadata_scraper.models import BookData
+from book_metadata_scraper.sources.base import (
+    BaseUniversalSource,
+    RateLimitExhausted,
+)
 from book_metadata_scraper.sources.registry import universal_source
 
 logger = logging.getLogger(__name__)
@@ -49,11 +53,6 @@ BASE_URL = "https://www.googleapis.com/books/v1/volumes"
 # Daily rate limit constants
 DAILY_CALL_LIMIT = 1000
 DAILY_LIMIT_RESET_SECONDS = 24 * 60 * 60  # 24 hours
-
-
-class GoogleBooksDailyLimitExceeded(Exception):
-    """Raised when the Google Books daily API call limit is reached."""
-    pass
 
 
 def _strip_html(text: str | None) -> str | None:
@@ -85,10 +84,17 @@ class GoogleBooksSource(BaseUniversalSource):
     def _check_daily_limit(cls) -> None:
         """Check if we've exceeded the daily call limit.
 
-        Raises GoogleBooksDailyLimitExceeded if the limit is reached.
+        Raises RateLimitExhausted if the limit is reached.
         Resets the counter if the 24-hour window has expired.
         """
         now = time.monotonic()
+
+        # Check limit BEFORE resetting — otherwise the reset on first
+        # call after expiry would wipe a just-hit limit
+        if cls._daily_call_count >= DAILY_CALL_LIMIT:
+            raise RateLimitExhausted(
+                f"Google Books daily limit reached: {cls._daily_call_count}/{DAILY_CALL_LIMIT} calls"
+            )
 
         # Reset window if more than 24 hours have passed
         if now - cls._daily_call_window_start > DAILY_LIMIT_RESET_SECONDS:
@@ -99,15 +105,12 @@ class GoogleBooksSource(BaseUniversalSource):
             cls._daily_call_count = 0
             cls._daily_call_window_start = now
 
-        # Check if we've exceeded the limit
-        if cls._daily_call_count >= DAILY_CALL_LIMIT:
-            raise GoogleBooksDailyLimitExceeded(
-                f"Google Books daily limit reached: {cls._daily_call_count}/{DAILY_CALL_LIMIT} calls"
-            )
-
     @classmethod
     def _record_api_call(cls) -> None:
-        """Record that an API call was made."""
+        """Record that an API call was made.
+
+        Raises RateLimitExhausted if recording this call exceeds the daily limit.
+        """
         now = time.monotonic()
 
         # Reset window if more than 24 hours have passed
@@ -122,6 +125,15 @@ class GoogleBooksSource(BaseUniversalSource):
                 "Google Books: %d/%d daily API calls used",
                 cls._daily_call_count,
                 DAILY_CALL_LIMIT,
+            )
+
+        # Check AFTER incrementing — the call already happened, so we
+        # need to stop the next one.  Reset window first so the next
+        # run (after 24h) starts fresh.
+        if cls._daily_call_count >= DAILY_CALL_LIMIT:
+            cls._daily_call_window_start = now  # pin window so next check resets
+            raise RateLimitExhausted(
+                f"Google Books daily limit reached: {cls._daily_call_count}/{DAILY_CALL_LIMIT} calls"
             )
 
     # ------------------------------------------------------------------
@@ -142,9 +154,6 @@ class GoogleBooksSource(BaseUniversalSource):
             q = f"isbn:{existing_identifiers['isbn']}"
         elif book.title and book.authors:
             first_author = book.authors[0].name
-            # Use + as a literal separator (not encoded) — Google Books
-            # interprets + as a space in the query value, but the special
-            # keywords (intitle:, inauthor:) must be preserved.
             q = f"intitle:{book.title} inauthor:{first_author}"
         else:
             return None
@@ -167,7 +176,7 @@ class GoogleBooksSource(BaseUniversalSource):
         """Convert a Google Books Volume resource into a BookData.
 
         Only fields that are useful for enrichment are populated.  Title
-        and authors are set to the originals so the orchestrator can
+        and authors are set to empty sentinels so the orchestrator can
         detect "no change" (it compares with ``is not book_data``).
         """
         info = volume.get("volumeInfo", {})
@@ -199,18 +208,13 @@ class GoogleBooksSource(BaseUniversalSource):
             k: v for k, v in identifiers.items() if k not in existing_identifiers
         }
 
-        # If we found no new identifiers AND no other new data, skip
-        # (handled by the caller comparing with ``is not book_data``)
-
         # --- Cover image ------------------------------------------------
         cover = None
         image_links = info.get("imageLinks", {})
         if image_links:
-            # Prefer larger sizes
             for size in ("extraLarge", "large", "medium", "thumbnail"):
                 if size in image_links:
                     cover = image_links[size]
-                    # Upgrade http:// to https://
                     if cover.startswith("http://"):
                         cover = "https://" + cover[7:]
                     break
@@ -241,16 +245,14 @@ class GoogleBooksSource(BaseUniversalSource):
     async def enrich(
         self, book: BookData, existing_identifiers: dict[str, str]
     ) -> BookData:
-        """Look up *book* in the Google Books API and return enriched data."""
+        """Look up *book* in the Google Books API and return enriched data.
+
+        Raises RateLimitExhausted on HTTP 429 or when the daily call
+        limit is reached.  The orchestrator catches this and stops
+        enrichment for this source.
+        """
         # Check daily limit before making any API calls
-        try:
-            self._check_daily_limit()
-        except GoogleBooksDailyLimitExceeded:
-            logger.warning(
-                "Google Books: daily limit reached, skipping enrichment for '%s'",
-                book.title,
-            )
-            return book
+        self._check_daily_limit()
 
         volume_id = existing_identifiers.get("google_books")
 
@@ -271,6 +273,8 @@ class GoogleBooksSource(BaseUniversalSource):
                     if result:
                         return result
                     # Fall through to search if direct fetch yielded nothing
+            except RateLimitExhausted:
+                raise  # propagate immediately — don't catch our own
             except Exception:
                 logger.debug(
                     "Google Books: direct fetch for volume %s failed, trying search",
@@ -291,19 +295,22 @@ class GoogleBooksSource(BaseUniversalSource):
             )
             self._record_api_call()
             data = response.json()
+        except RateLimitExhausted:
+            raise  # propagate immediately
         except Exception as e:
             # Check if this is a 429 error (rate limited)
-            # Scrapling may wrap the response in the exception
             response_obj = getattr(e, 'response', None)
             if response_obj is not None:
                 status_code = getattr(response_obj, 'status_code', None)
                 if status_code == 429:
                     logger.warning(
-                        "Google Books: 429 rate limited, stopping enrichment for today. "
-                        "Successfully enriched %d books before hitting limit.",
+                        "Google Books: 429 rate limited (call %d/%d)",
                         self._daily_call_count,
+                        DAILY_CALL_LIMIT,
                     )
-                    return book
+                    raise RateLimitExhausted(
+                        "Google Books returned 429 Too Many Requests"
+                    ) from e
             logger.exception("Google Books: search request failed")
             return book
 
