@@ -176,3 +176,17 @@ Motivation: The scraper crashed overnight with a Node.js heap OOM (`Ineffective 
 - **Memory logging in restart:** Each stealthy session restart now logs RSS (Resident Set Size) before and after, measured via `/proc/self/status` with `resource.getrusage` fallback.  This gives operators hard numbers for tuning `stealthy_page_limit` — they can see exactly how much memory each restart reclaims.
 - **`stealthy_page_limit` now configurable:** Added `stealthy_page_limit` to `ScraperConfig` and `load_config()` so it can be set in `scraper.toml`.  Previously it was hardcoded as the `SessionManager` default (20) but never wired through from config.  The orchestrator now passes it through.
 - **Database corruption risk on OOM:** Confirmed that the database is safe.  Each book write is its own committed transaction.  The OOM is in Node.js (patchright's Chromium), not Python — when the Chromium process dies, `fetch_stealthy` raises an exception caught by the orchestrator, and the next book proceeds.  Uncommitted transactions are rolled back by SQLite.  No data corruption or partial writes.
+
+## 2026-06-30: Google Books rate limiting and daily cap
+
+Improved rate limiting for Google Books API to prevent 429 errors and respect daily quotas:
+
+- **Per-request rate limit:** Added `rate_limit = 1.5` class attribute to `GoogleBooksSource` (1 request every 1.5 seconds). This overrides the global `http_rate_limit` for Google Books requests.
+- **Daily call limit:** Implemented tracking of API calls with a 1,000 calls per 24-hour period limit. Uses class-level counters (`_daily_call_count`, `_daily_call_window_start`) that persist across instances within a run.
+- **Graceful degradation:** When a 429 error is received or the daily limit is reached, enrichment stops gracefully and returns whatever data was gathered so far. The remaining books are skipped and will be picked up on the next run.
+- **Progress logging:** Logs every 100 API calls to help operators track usage against the daily limit.
+- **Automatic window reset:** The 24-hour window resets automatically when more than 24 hours have passed since the window started.
+
+This addresses the user's issue with Google Books 429 errors and ensures the scraper doesn't exceed Google's daily quota. The remaining books are simply skipped and will be enriched on the next run, preventing data loss.
+
+Also updated Mountaindale Press rate limit from 1 request/second to 1 request every 3 seconds to reduce 429 errors from Shopify's aggressive rate limiting.

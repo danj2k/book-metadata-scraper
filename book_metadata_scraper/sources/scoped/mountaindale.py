@@ -133,7 +133,7 @@ class MountaindalePressSource(BaseScopedSource):
 
     name = "mountaindale_press"
     session_type = SESSION_HTTP
-    rate_limit = 1.0  # 1 request per second — Shopify rate-limits aggressively
+    rate_limit = 3.0  # 1 request every 3 seconds — Shopify rate-limits aggressively
 
     BASE_URL = "https://www.mountaindalepress.store"
     COLLECTION_URL = f"{BASE_URL}/collections/all-books/products.json"
